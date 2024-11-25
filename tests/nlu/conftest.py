@@ -18,6 +18,7 @@ from rasa.utils.tensorflow.constants import EPOCHS, RANDOM_SEED
 @pytest.fixture()
 def pretrained_embeddings_spacy_config() -> Dict:
     return {
+        "assistant_id": "placeholder_default",
         "language": "en",
         "pipeline": [
             {"name": "SpacyNLP", "model": "en_core_web_md"},
@@ -36,7 +37,7 @@ def train_and_preprocess(
     default_model_storage: ModelStorage,
 ) -> Callable[..., Tuple[TrainingData, List[GraphComponent]]]:
     def inner(
-        pipeline: List[Dict[Text, Any]], training_data: Union[Text, TrainingData],
+        pipeline: List[Dict[Text, Any]], training_data: Union[Text, TrainingData]
     ) -> Tuple[TrainingData, List[GraphComponent]]:
 
         if isinstance(training_data, str):
@@ -73,8 +74,8 @@ def train_and_preprocess(
 
 
 @pytest.fixture()
-def process_message(default_model_storage: ModelStorage,) -> Callable[..., Message]:
-    def inner(loaded_pipeline: List[GraphComponent], message: Message,) -> Message:
+def process_message(default_model_storage: ModelStorage) -> Callable[..., Message]:
+    def inner(loaded_pipeline: List[GraphComponent], message: Message) -> Message:
 
         for component in loaded_pipeline:
             component.process([message])
@@ -91,9 +92,7 @@ def spacy_tokenizer() -> SpacyTokenizer:
 
 @pytest.fixture()
 def spacy_featurizer() -> SpacyFeaturizer:
-    return SpacyFeaturizer(
-        SpacyFeaturizer.get_default_config(), name="SpacyFeaturizer",
-    )
+    return SpacyFeaturizer(SpacyFeaturizer.get_default_config(), name="SpacyFeaturizer")
 
 
 @pytest.fixture()

@@ -5,7 +5,6 @@ import typing
 import logging
 from typing import Any, Dict, List, Optional, Text, Tuple
 
-
 from rasa.engine.graph import ExecutionContext, GraphComponent
 from rasa.engine.recipes.default_recipe import DefaultV1Recipe
 from rasa.engine.storage.resource import Resource
@@ -19,7 +18,7 @@ from rasa.shared.constants import DOCS_URL_COMPONENTS
 logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
-    from spacy.language import Language  # noqa: F401
+    from spacy.language import Language
     from spacy.tokens import Doc
 
 
@@ -71,7 +70,7 @@ class SpacyNLP(GraphComponent):
             # retrieve the same vector, if set to `False`. For some
             # applications and models it makes sense to differentiate
             # between these two words, therefore setting this to `True`.
-            "case_sensitive": False,
+            "case_sensitive": False
         }
 
     @staticmethod
@@ -86,22 +85,37 @@ class SpacyNLP(GraphComponent):
                 f"For example:\n"
                 f"- name: SpacyNLP\n"
                 f"  model: en_core_web_md\n"
-                f"More informaton can be found on {DOCS_URL_COMPONENTS}#spacynlp"
+                f"More information can be found on {DOCS_URL_COMPONENTS}#spacynlp"
             )
 
         try:
             language = spacy.load(spacy_model_name, disable=["parser"])
+            spacy_runtime_version = spacy.about.__version__
+            spacy_model_info = spacy.info(spacy_model_name)
+            spacy_model_version_req = (
+                spacy_model_info.get("spacy_version")
+                if isinstance(spacy_model_info, dict)
+                else ""
+            )
+            if not spacy.util.is_compatible_version(
+                spacy_runtime_version, spacy_model_version_req
+            ):
+                raise InvalidModelError(
+                    f"The specified model - {spacy_model_name} requires a spaCy "
+                    f"runtime version {spacy_model_version_req} and is not compatible "
+                    f"with the current spaCy runtime version {spacy_runtime_version}"
+                )
             return SpacyModel(model=language, model_name=spacy_model_name)
         except OSError:
             raise InvalidModelError(
                 f"Please confirm that {spacy_model_name} is an available spaCy model. "
                 f"You need to download one upfront. For example:\n"
                 f"python -m spacy download en_core_web_md\n"
-                f"More informaton can be found on {DOCS_URL_COMPONENTS}#spacynlp"
+                f"More information can be found on {DOCS_URL_COMPONENTS}#spacynlp"
             )
 
-    @classmethod
-    def required_packages(cls) -> List[Text]:
+    @staticmethod
+    def required_packages() -> List[Text]:
         """Lists required dependencies (see parent class for full docstring)."""
         return ["spacy"]
 
@@ -121,7 +135,7 @@ class SpacyNLP(GraphComponent):
         model = cls.load_model(spacy_model_name)
 
         cls.ensure_proper_language_model(model.model)
-        return cls(model, config)
+        return cls(model, {**cls.get_default_config(), **config})
 
     @staticmethod
     def ensure_proper_language_model(nlp: Optional[Language]) -> None:
@@ -271,9 +285,7 @@ class SpacyNLP(GraphComponent):
         self, training_data: TrainingData, model: SpacyModel
     ) -> TrainingData:
         """Adds SpaCy tokens and features to training data messages."""
-        model = model.model
-
-        attribute_docs = self._docs_for_training_data(model, training_data)
+        attribute_docs = self._docs_for_training_data(model.model, training_data)
 
         for attribute in DENSE_FEATURIZABLE_ATTRIBUTES:
 
@@ -289,13 +301,12 @@ class SpacyNLP(GraphComponent):
 
     def process(self, messages: List[Message], model: SpacyModel) -> List[Message]:
         """Adds SpaCy tokens and features to messages."""
-        model = model.model
         for message in messages:
             for attribute in DENSE_FEATURIZABLE_ATTRIBUTES:
                 if message.get(attribute):
                     message.set(
                         SPACY_DOCS[attribute],
-                        self._doc_for_text(model, message.get(attribute)),
+                        self._doc_for_text(model.model, message.get(attribute)),
                     )
 
         return messages

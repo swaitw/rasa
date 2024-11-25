@@ -12,7 +12,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from pytest_sanic.utils import TestClient
 from sanic import Sanic, response
 from sanic.request import Request
-from sanic.response import StreamingHTTPResponse
+from sanic.response import ResponseStream
 
 import rasa.core
 from rasa.core.exceptions import AgentNotReady
@@ -35,21 +35,21 @@ from rasa.core.channels.channel import UserMessage
 from rasa.shared.core.domain import Domain
 from rasa.shared.constants import INTENT_MESSAGE_PREFIX
 from rasa.utils.endpoints import EndpointConfig
-from tests.conftest import with_model_ids
+from tests.conftest import with_assistant_ids, with_model_ids
 
 
 def model_server_app(model_path: Text, model_hash: Text = "somehash") -> Sanic:
-    app = Sanic(__name__)
-    app.number_of_model_requests = 0
+    app = Sanic("test_agent")
+    app.ctx.number_of_model_requests = 0
 
     @app.route("/model", methods=["GET"])
-    async def model(request: Request) -> StreamingHTTPResponse:
+    async def model(request: Request) -> ResponseStream:
         """Simple HTTP model server responding with a trained model."""
 
         if model_hash == request.headers.get("If-None-Match"):
             return response.text("", 204)
 
-        app.number_of_model_requests += 1
+        app.ctx.number_of_model_requests += 1
 
         return await response.file_stream(
             location=model_path,
@@ -98,9 +98,17 @@ async def test_agent_train(default_agent: Agent):
                         "start": 6,
                         "end": 21,
                         "value": "Rasa",
-                        "extractor": "RegexMessageHandler",
                     }
                 ],
+            },
+        ),
+        (
+            "hi hello",
+            {
+                "text": "hi hello",
+                "intent": {"name": "greet", "confidence": 1.0},
+                "text_tokens": [(0, 2), (3, 8)],
+                "entities": [],
             },
         ),
     ],
@@ -156,7 +164,7 @@ async def test_agent_with_model_server_in_thread(
     assert agent.domain.as_dict() == domain.as_dict()
     assert agent.processor.graph_runner
 
-    assert model_server.app.number_of_model_requests == 1
+    assert model_server.app.ctx.number_of_model_requests == 1
     jobs.kill_scheduler()
 
 
@@ -228,16 +236,17 @@ async def test_agent_load_on_invalid_model_path(model_path: Optional[Text]):
 
 async def test_agent_handle_message_full_model(default_agent: Agent):
     model_id = default_agent.model_id
+    assistant_id = default_agent.processor.model_metadata.assistant_id
     sender_id = uuid.uuid4().hex
     message = UserMessage("hello", sender_id=sender_id)
     await default_agent.handle_message(message)
-    tracker = default_agent.tracker_store.get_or_create_tracker(sender_id)
-    expected_events = with_model_ids(
+    tracker = await default_agent.tracker_store.get_or_create_tracker(sender_id)
+    events = with_model_ids(
         [
             ActionExecuted(action_name="action_session_start"),
             SessionStarted(),
             ActionExecuted(action_name="action_listen"),
-            UserUttered(text="hello", intent={"name": "greet"},),
+            UserUttered(text="hello", intent={"name": "greet"}),
             DefinePrevUserUtteredFeaturization(False),
             ActionExecuted(action_name="utter_greet"),
             BotUttered(
@@ -256,6 +265,7 @@ async def test_agent_handle_message_full_model(default_agent: Agent):
         ],
         model_id,
     )
+    expected_events = with_assistant_ids(events, assistant_id)
     assert len(tracker.events) == len(expected_events)
     for e1, e2 in zip(tracker.events, expected_events):
         assert e1 == e2
@@ -264,19 +274,21 @@ async def test_agent_handle_message_full_model(default_agent: Agent):
 async def test_agent_handle_message_only_nlu(trained_nlu_model: Text):
     agent = await load_agent(model_path=trained_nlu_model)
     model_id = agent.model_id
+    assistant_id = agent.processor.model_metadata.assistant_id
     sender_id = uuid.uuid4().hex
     message = UserMessage("hello", sender_id=sender_id)
     await agent.handle_message(message)
-    tracker = agent.tracker_store.get_or_create_tracker(sender_id)
-    expected_events = with_model_ids(
+    tracker = await agent.tracker_store.get_or_create_tracker(sender_id)
+    events = with_model_ids(
         [
             ActionExecuted(action_name="action_session_start"),
             SessionStarted(),
             ActionExecuted(action_name="action_listen"),
-            UserUttered(text="hello", intent={"name": "greet"},),
+            UserUttered(text="hello", intent={"name": "greet"}),
         ],
         model_id,
     )
+    expected_events = with_assistant_ids(events, assistant_id)
     assert len(tracker.events) == len(expected_events)
     for e1, e2 in zip(tracker.events, expected_events):
         assert e1 == e2
@@ -285,16 +297,17 @@ async def test_agent_handle_message_only_nlu(trained_nlu_model: Text):
 async def test_agent_handle_message_only_core(trained_core_model: Text):
     agent = await load_agent(model_path=trained_core_model)
     model_id = agent.model_id
+    assistant_id = agent.processor.model_metadata.assistant_id
     sender_id = uuid.uuid4().hex
     message = UserMessage("/greet", sender_id=sender_id)
     await agent.handle_message(message)
-    tracker = agent.tracker_store.get_or_create_tracker(sender_id)
-    expected_events = with_model_ids(
+    tracker = await agent.tracker_store.get_or_create_tracker(sender_id)
+    events = with_model_ids(
         [
             ActionExecuted(action_name="action_session_start"),
             SessionStarted(),
             ActionExecuted(action_name="action_listen"),
-            UserUttered(text="/greet", intent={"name": "greet"},),
+            UserUttered(text="/greet", intent={"name": "greet"}),
             DefinePrevUserUtteredFeaturization(False),
             ActionExecuted(action_name="utter_greet"),
             BotUttered(
@@ -313,6 +326,7 @@ async def test_agent_handle_message_only_core(trained_core_model: Text):
         ],
         model_id,
     )
+    expected_events = with_assistant_ids(events, assistant_id)
     assert len(tracker.events) == len(expected_events)
     for e1, e2 in zip(tracker.events, expected_events):
         assert e1 == e2

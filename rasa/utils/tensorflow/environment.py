@@ -53,7 +53,6 @@ def _allocate_gpu_memory(
         logical_memory: Absolute amount of memory to be allocated to the new logical
             device.
     """
-
     from tensorflow import config as tf_config
 
     try:
@@ -84,7 +83,6 @@ def _parse_gpu_config(gpu_memory_config: Text) -> Dict[int, int]:
         Parsed configuration as a dictionary with GPU IDs as keys and requested memory
         as the value.
     """
-
     # gpu_config is of format "gpu_id_1:gpu_id_1_memory, gpu_id_2: gpu_id_2_memory"
     # Parse it and store in a dictionary
     parsed_gpu_config: Dict[int, int] = {}
@@ -119,25 +117,29 @@ def _setup_cpu_environment() -> None:
 
     if inter_op_parallel_threads:
         try:
-            inter_op_parallel_threads = int(inter_op_parallel_threads.strip())
+            inter_op_parallel_threads_number = int(inter_op_parallel_threads.strip())
         except ValueError:
             raise ValueError(
                 f"Error parsing the environment variable '{ENV_CPU_INTER_OP_CONFIG}'. "
                 f"Please cross-check the value."
             )
 
-        tf_config.threading.set_inter_op_parallelism_threads(inter_op_parallel_threads)
+        tf_config.threading.set_inter_op_parallelism_threads(
+            inter_op_parallel_threads_number
+        )
 
     if intra_op_parallel_threads:
         try:
-            intra_op_parallel_threads = int(intra_op_parallel_threads.strip())
+            intra_op_parallel_threads_number = int(intra_op_parallel_threads.strip())
         except ValueError:
             raise ValueError(
                 f"Error parsing the environment variable '{ENV_CPU_INTRA_OP_CONFIG}'. "
                 f"Please cross-check the value."
             )
 
-        tf_config.threading.set_intra_op_parallelism_threads(intra_op_parallel_threads)
+        tf_config.threading.set_intra_op_parallelism_threads(
+            intra_op_parallel_threads_number
+        )
 
 
 def setup_tf_environment() -> None:

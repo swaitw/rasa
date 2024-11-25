@@ -1,10 +1,11 @@
-from typing import Text, Any
+from typing import Dict, List, Text, Any
 
 import logging
 import pytest
 from _pytest.logging import LogCaptureFixture
 
 from rasa.core.nlg.response import TemplatedNaturalLanguageGenerator
+from rasa.shared.constants import LATEST_TRAINING_DATA_FORMAT_VERSION
 from rasa.shared.core.domain import Domain
 from rasa.shared.core.slots import TextSlot, AnySlot, CategoricalSlot, BooleanSlot
 from rasa.shared.core.trackers import DialogueStateTracker
@@ -77,6 +78,125 @@ async def test_nlg_when_multiple_conditions_satisfied():
         utter_action="utter_action", tracker=tracker, output_channel=""
     )
     assert resp.get("text") in ["example A", "example B"]
+
+
+@pytest.fixture(scope="session")
+def test_slots() -> List[object]:
+    slot_a = CategoricalSlot(
+        name="test",
+        mappings=[{"type": "from_text", "value": ["cold", "hot"]}],
+        initial_value="Cold",
+        influence_conversation=False,
+    )
+    slot_b = BooleanSlot(
+        name="test2",
+        mappings=[{}],
+        initial_value=False,
+        influence_conversation=False,
+    )
+    slot_c = CategoricalSlot(
+        name="test3",
+        mappings=[{"type": "from_text", "value": ["cold", "hot"]}],
+        initial_value="hot",
+        influence_conversation=False,
+    )
+    return [slot_a, slot_b, slot_c]
+
+
+@pytest.fixture(scope="session")
+def test_responses() -> List[Dict[Text, List[Dict[Text, Any]]]]:
+    return [
+        {
+            "utter_action": [
+                {
+                    "text": "example a",
+                    "condition": [{"type": "slot", "name": "test", "value": "cold"}],
+                }
+            ]
+        },
+        {
+            "utter_action_multiple_conditions": [
+                {
+                    "text": "example b",
+                    "condition": [
+                        {"type": "slot", "name": "test", "value": "cold"},
+                        {"type": "slot", "name": "test2", "value": False},
+                        {"type": "slot", "name": "test3", "value": "hot"},
+                    ],
+                }
+            ]
+        },
+    ]
+
+
+async def test_nlg_slot_case_sensitivity(
+    test_slots: List[object],
+    test_responses: List[Dict[Text, List[Dict[Text, Any]]]],
+):
+    utter_action = "utter_action"
+    t = TemplatedNaturalLanguageGenerator(responses=test_responses[0])
+    tracker = DialogueStateTracker(sender_id="test_nlg", slots=[test_slots[0]])
+    resp = await t.generate(
+        utter_action=utter_action, tracker=tracker, output_channel=""
+    )
+    assert resp.get("text") == test_responses[0][utter_action][0]["text"]
+
+
+async def test_matches_filled_slots_multiple_conditions(
+    test_slots: List[object],
+    test_responses: List[Dict[Text, List[Dict[Text, Any]]]],
+):
+    utter_action = "utter_action_multiple_conditions"
+    t = TemplatedNaturalLanguageGenerator(responses=test_responses[1])
+    tracker = DialogueStateTracker(sender_id="test_nlg", slots=test_slots)
+    resp = await t.generate(
+        utter_action=utter_action,
+        tracker=tracker,
+        output_channel="",
+    )
+    assert resp.get("text") == test_responses[1][utter_action][0]["text"]
+
+
+async def test_matches_filled_slots_multiple_conditions_neg_match_boolean_slot(
+    test_slots: List[object], test_responses: List[Dict[Text, List[Dict[Text, Any]]]]
+):
+    t = TemplatedNaturalLanguageGenerator(responses=test_responses[1])
+    test_slots[1].initial_value = True
+    tracker = DialogueStateTracker(sender_id="test_nlg", slots=test_slots)
+    resp = await t.generate(
+        utter_action="utter_action_multiple_conditions",
+        tracker=tracker,
+        output_channel="",
+    )
+    assert resp is None
+
+
+async def test_matches_filled_slots_multiple_conditions_neg_match_in_first_slot(
+    test_slots: List[object], test_responses: List[Dict[Text, List[Dict[Text, Any]]]]
+):
+    t = TemplatedNaturalLanguageGenerator(responses=test_responses[1])
+    test_slots[0].initial_value = "junk"
+    tracker = DialogueStateTracker(sender_id="test_nlg", slots=test_slots)
+    resp = await t.generate(
+        utter_action="utter_action_multiple_conditions",
+        tracker=tracker,
+        output_channel="",
+    )
+    assert resp is None
+
+
+async def test_matches_filled_slots_multiple_conditions_neg_match_in_last_slot(
+    test_slots: List[object], test_responses: List[Dict[Text, List[Dict[Text, Any]]]]
+):
+    t = TemplatedNaturalLanguageGenerator(responses=test_responses[1])
+    test_slots[2].initial_value = "junk"
+    tracker = DialogueStateTracker(sender_id="test_nlg", slots=test_slots)
+    resp = await t.generate(
+        utter_action="utter_action_multiple_conditions",
+        tracker=tracker,
+        output_channel="",
+    )
+    assert resp is None
 
 
 @pytest.mark.parametrize(
@@ -250,7 +370,7 @@ async def test_nlg_conditional_response_variations_with_diff_slot_types(
 async def test_nlg_non_matching_channel():
     domain = Domain.from_yaml(
         """
-    version: "3.0"
+    version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
     responses:
         utter_hi:
         - text: "Hello"
@@ -266,8 +386,8 @@ async def test_nlg_non_matching_channel():
 
 async def test_nlg_conditional_response_variations_with_none_slot():
     domain = Domain.from_yaml(
-        """
-        version: "3.0"
+        f"""
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         responses:
             utter_action:
             - text: "text A"
@@ -288,8 +408,8 @@ async def test_nlg_conditional_response_variations_with_none_slot():
 
 async def test_nlg_conditional_response_variations_with_slot_not_a_constraint():
     domain = Domain.from_yaml(
-        """
-            version: "3.0"
+        f"""
+            version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
             responses:
                 utter_action:
                 - text: "text A"
@@ -310,8 +430,8 @@ async def test_nlg_conditional_response_variations_with_slot_not_a_constraint():
 
 async def test_nlg_conditional_response_variations_with_null_slot():
     domain = Domain.from_yaml(
-        """
-                version: "3.0"
+        f"""
+                version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
                 responses:
                     utter_action:
                     - text: "text for null"
@@ -336,8 +456,8 @@ async def test_nlg_conditional_response_variations_with_null_slot():
 
 async def test_nlg_conditional_response_variations_channel_no_condition_met():
     domain = Domain.from_yaml(
-        """
-        version: "3.0"
+        f"""
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         responses:
            utter_action:
              - text: "example with channel"
@@ -357,8 +477,8 @@ async def test_nlg_conditional_response_variations_channel_no_condition_met():
 
 async def test_nlg_conditional_response_variation_condition_met_channel_mismatch():
     domain = Domain.from_yaml(
-        """
-        version: "3.0"
+        f"""
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         responses:
            utter_action:
              - text: "example with channel"
@@ -390,7 +510,7 @@ async def test_nlg_conditional_response_variation_condition_met_channel_mismatch
                     mappings=[{}],
                     initial_value="B",
                     influence_conversation=False,
-                ),
+                )
             ],
             "app",
             "condition example B no channel",
@@ -402,7 +522,7 @@ async def test_nlg_conditional_response_variation_condition_met_channel_mismatch
                     mappings=[{}],
                     initial_value="C",
                     influence_conversation=False,
-                ),
+                )
             ],
             "",
             "default",
@@ -414,7 +534,7 @@ async def test_nlg_conditional_response_variation_condition_met_channel_mismatch
                     mappings=[{}],
                     initial_value="D",
                     influence_conversation=False,
-                ),
+                )
             ],
             "app",
             "default",
@@ -423,8 +543,8 @@ async def test_nlg_conditional_response_variation_condition_met_channel_mismatch
 )
 async def test_nlg_conditional_edgecases(slots, channel, expected_response):
     domain = Domain.from_yaml(
-        """
-        version: "3.0"
+        f"""
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         responses:
            utter_action:
              - text: "condition example A with channel"
@@ -466,8 +586,8 @@ async def test_nlg_conditional_response_variations_condition_logging(
     caplog: LogCaptureFixture,
 ):
     domain = Domain.from_yaml(
-        """
-        version: "3.0"
+        f"""
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         responses:
            utter_action:
              - text: "example"

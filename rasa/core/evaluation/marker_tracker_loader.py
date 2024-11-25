@@ -1,7 +1,7 @@
 import random
 from rasa.shared.exceptions import RasaException
 from rasa.shared.core.trackers import DialogueStateTracker
-from typing import Any, Iterable, Iterator, List, Text, Optional
+from typing import Any, Iterable, List, Text, Optional, AsyncIterator
 from rasa.core.tracker_store import TrackerStore
 import rasa.shared.utils.io
 
@@ -28,7 +28,7 @@ def strategy_sample_n(keys: List[Text], count: int) -> Iterable[Text]:
 class MarkerTrackerLoader:
     """Represents a wrapper over a `TrackerStore` with a configurable access pattern."""
 
-    _STRATEGY_MAP = {
+    _STRATEGY_MAP = {  # noqa: RUF012
         "all": strategy_all,
         "first_n": strategy_first_n,
         "sample_n": strategy_sample_n,
@@ -38,7 +38,7 @@ class MarkerTrackerLoader:
         self,
         tracker_store: TrackerStore,
         strategy: str,
-        count: int = None,
+        count: Optional[int] = None,
         seed: Any = None,
     ) -> None:
         """Creates a MarkerTrackerLoader.
@@ -87,9 +87,9 @@ class MarkerTrackerLoader:
                     f"Parameter 'seed' is ignored by strategy '{strategy}'."
                 )
 
-    def load(self) -> Iterator[Optional[DialogueStateTracker]]:
+    async def load(self) -> AsyncIterator[Optional[DialogueStateTracker]]:
         """Loads trackers according to strategy."""
-        stored_keys = list(self.tracker_store.keys())
+        stored_keys = list(await self.tracker_store.keys())
         if self.count is not None and self.count > len(stored_keys):
             # Warn here as user may have overestimated size of data set
             rasa.shared.utils.io.raise_warning(
@@ -100,4 +100,4 @@ class MarkerTrackerLoader:
 
         keys = self.strategy(stored_keys, self.count)
         for sender in keys:
-            yield self.tracker_store.retrieve_full_tracker(sender)
+            yield await self.tracker_store.retrieve_full_tracker(sender)

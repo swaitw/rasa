@@ -1,5 +1,4 @@
-"""
-This module regroups custom validation functions, and it is
+"""This module regroups custom validation functions, and it is
 loaded as an extension of the pykwalify library:
 
 https://pykwalify.readthedocs.io/en/latest/extensions.html#extensions
@@ -21,7 +20,7 @@ def require_response_keys(
         if response.get("text") is None and not response.get("custom"):
             return SchemaError(
                 "Missing 'text' or 'custom' key in response or "
-                "null 'text' value in response.",
+                "null 'text' value in response."
             )
 
     return True

@@ -1,19 +1,34 @@
 # Docs
 
 The docs are built using [Docusaurus 2](https://v2.docusaurus.io/).
+To run Docusaurus, install `Node.js 12.x`.
 
 ## Useful commands
 
 ### Installation
+Firstly, install python dependencies for Rasa:
 
 ```
-$ yarn
+$ make install
+```
+
+Then, install doc dependencies:
+
+```
+$ make install-docs
 ```
 
 ### Local Development
+In order to build the docs, run:
 
 ```
-$ yarn start
+$ make docs
+```
+
+Then, start doc server in watch mode:
+
+```
+$ make livedocs
 ```
 
 This command starts a local development server and open up a browser window. Most changes are reflected live without having to restart the server.
@@ -38,7 +53,7 @@ When a new docs version has been released, we'll need to do the following manual
   those using `:::info` or `:::caution` in all the docs files.
 - Update the wording of the top banner, configured in `docusaurus.config.js` in `announcementBar`: update the Rasa versions
   that are mentioned and link to the now previous major version documentation.
-- Update Netlify redirects in `netflify.toml`, under `# Redirects for latest version permalinks`, by adjusting the
+- Update Netlify redirects in `netlify.toml`, under `# Redirects for latest version permalinks`, by adjusting the
   version number to the now new major version.
 
 

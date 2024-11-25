@@ -1,4 +1,5 @@
 recipe: default.v1
+assistant_id: form_bot
 language: en
 
 pipeline:
@@ -11,11 +12,12 @@ pipeline:
     dimensions:
       - number
   - name: DIETClassifier
-    epochs: 100
+    epochs: 1
+    run_eagerly: True
   - name: EntitySynonymMapper
 
 policies:
   - name: TEDPolicy
-    epochs: 100
+    epochs: 1
   - name: AugmentedMemoizationPolicy
   - name: RulePolicy

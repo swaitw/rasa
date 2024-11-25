@@ -21,6 +21,7 @@ from rasa.shared.constants import (
     INTENT_MESSAGE_PREFIX,
     DEFAULT_SENDER_ID,
     DOCS_URL_POLICIES,
+    LATEST_TRAINING_DATA_FORMAT_VERSION,
 )
 from rasa.shared.core.constants import ACTION_LISTEN_NAME, ACTION_UNLIKELY_INTENT_NAME
 from rasa.shared.core.domain import Domain
@@ -51,6 +52,38 @@ def mock_file_importer(
     return TrainingDataImporter.load_from_config(
         stack_config_path, domain_path, [nlu_data_path, stories_path]
     )
+
+
+@pytest.mark.parametrize(
+    "domain_file, expected_intents",
+    [
+        (
+            "data/test_domains/default_unfeaturized_entities.yml",
+            [
+                "greet",
+                "default",
+                "goodbye",
+                "thank",
+                "ask",
+                "why",
+                "pure_intent",
+            ],
+        ),
+        (
+            "data/test_domains/default.yml",
+            [
+                "greet",
+                "default",
+                "goodbye",
+            ],
+        ),
+    ],
+)
+def test_intent_names_from_domain(domain_file, expected_intents):
+    test_domain = Domain.load(domain_file)
+
+    intents = interactive.intent_names_from_domain(test_domain.as_dict())
+    assert set(intents) == set(expected_intents)
 
 
 async def test_send_message(mock_endpoint: EndpointConfig):
@@ -480,9 +513,7 @@ async def test_undo_latest_msg(mock_endpoint):
         assert corrected_event["event"] == "undo"
 
 
-async def test_write_stories_to_file(
-    mock_endpoint: EndpointConfig, tmp_path,
-):
+async def test_write_stories_to_file(mock_endpoint: EndpointConfig, tmp_path):
     tracker_dump = rasa.shared.utils.io.read_file(
         "data/test_trackers/tracker_moodbot_with_new_utterances.json"
     )
@@ -505,7 +536,7 @@ async def test_write_stories_to_file(
         {"name": str(tmp_path / "domain.yml"), "validator": lambda path: True},
     ]
 
-    def info() -> Tuple[Text, Text, Text]:
+    async def info() -> Tuple[Text, Text, Text]:
         return target_files[0]["name"], target_files[1]["name"], target_files[2]["name"]
 
     with aioresponses() as mocked:
@@ -575,7 +606,7 @@ async def test_write_domain_to_file_with_form(tmp_path: Path):
     form_name = "my_form"
     old_domain = Domain.from_yaml(
         f"""
-        version: "3.0"
+        version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
         actions:
         - utter_greet
         - utter_goodbye
@@ -620,7 +651,7 @@ async def test_filter_intents_before_save_nlu_file(domain_path: Text):
 
 @pytest.mark.parametrize(
     "path, expected_format",
-    [("bla.json", RASA), ("other.yml", RASA_YAML), ("unknown", UNK),],
+    [("bla.json", RASA), ("other.yml", RASA_YAML), ("unknown", UNK)],
 )
 def test_get_nlu_target_format(path: Text, expected_format: Text):
     assert interactive._get_nlu_target_format(path) == expected_format
@@ -694,7 +725,7 @@ class QuestionaryConfirmMock:
     def __call__(self, text: Text) -> "QuestionaryConfirmMock":
         return self
 
-    def ask(self) -> bool:
+    async def ask_async(self) -> bool:
         self.tries -= 1
         if self.tries == 0:
             return False
@@ -702,11 +733,11 @@ class QuestionaryConfirmMock:
             return True
 
 
-def test_retry_on_error_success(monkeypatch: MonkeyPatch):
+async def test_retry_on_error_success(monkeypatch: MonkeyPatch):
     monkeypatch.setattr(interactive.questionary, "confirm", QuestionaryConfirmMock(3))
 
     m = Mock(return_value=None)
-    interactive._retry_on_error(m, "export_path", 1, a=2)
+    await interactive._retry_on_error(m, "export_path", 1, a=2)
     m.assert_called_once_with("export_path", 1, a=2)
 
 
@@ -762,9 +793,7 @@ async def test_correct_question_for_action_name_was_asked(
     tracker = DialogueStateTracker.from_events("some_sender", [])
 
     monkeypatch.setattr(
-        interactive,
-        "retrieve_tracker",
-        AsyncMock(return_value=tracker.current_state()),
+        interactive, "retrieve_tracker", AsyncMock(return_value=tracker.current_state())
     )
     monkeypatch.setattr(
         interactive, "_ask_questions", AsyncMock(return_value=is_marked_as_correct)
@@ -772,7 +801,7 @@ async def test_correct_question_for_action_name_was_asked(
     monkeypatch.setattr(
         interactive,
         "_request_action_from_user",
-        AsyncMock(return_value=("action_another_one", False,)),
+        AsyncMock(return_value=("action_another_one", False)),
     )
 
     mocked_send_action = AsyncMock()
@@ -790,12 +819,12 @@ async def test_correct_question_for_action_name_was_asked(
     assert args[2] == sent_action_name
 
 
-def test_retry_on_error_three_retries(monkeypatch: MonkeyPatch):
+async def test_retry_on_error_three_retries(monkeypatch: MonkeyPatch):
     monkeypatch.setattr(interactive.questionary, "confirm", QuestionaryConfirmMock(3))
 
     m = Mock(side_effect=PermissionError())
     with pytest.raises(PermissionError):
-        interactive._retry_on_error(m, "export_path", 1, a=2)
+        await interactive._retry_on_error(m, "export_path", 1, a=2)
     c = unittest.mock.call("export_path", 1, a=2)
     m.assert_has_calls([c, c, c])
 
@@ -815,7 +844,7 @@ def test_retry_on_error_three_retries(monkeypatch: MonkeyPatch):
             "急性淋巴细胞白血病、感染性血小板减少性紫癜、单纯性牙周炎、单核细胞白血病、"
             "δ-贮存池病、小儿特发性血小板减少性紫癜、老年人真性红细胞增多症、"
             "急性根尖牙周炎、慢性根尖牙周炎、创伤性口炎、青少年牙周炎、慢性牙周炎",
-            119,
+            120,
             60,
         ),
     ],

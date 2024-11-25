@@ -7,6 +7,7 @@ from rasa.cli.arguments.default_arguments import (
     add_nlu_data_param,
     add_out_param,
     add_domain_param,
+    add_endpoint_param,
 )
 from rasa.graph_components.providers.training_tracker_provider import (
     TrainingTrackerProvider,
@@ -24,6 +25,7 @@ def set_train_arguments(parser: argparse.ArgumentParser) -> None:
     add_out_param(parser, help_text="Directory where your models should be stored.")
 
     add_dry_run_param(parser)
+    add_validate_before_train(parser)
     add_augmentation_param(parser)
     add_debug_plots_param(parser)
 
@@ -33,6 +35,9 @@ def set_train_arguments(parser: argparse.ArgumentParser) -> None:
     add_persist_nlu_data_param(parser)
     add_force_param(parser)
     add_finetune_params(parser)
+    add_endpoint_param(
+        parser, help_text="Configuration file for the connectors as a yml file."
+    )
 
 
 def set_train_core_arguments(parser: argparse.ArgumentParser) -> None:
@@ -143,6 +148,37 @@ def add_dry_run_param(
     )
 
 
+def add_validate_before_train(
+    parser: Union[argparse.ArgumentParser, argparse._ActionsContainer]
+) -> None:
+    """Adds parameters for validating the domain and data files before training.
+
+    Args:
+        parser: An instance of `ArgumentParser` or `_ActionsContainer`.
+    """
+    parser.add_argument(
+        "--skip-validation",
+        default=False,
+        action="store_true",
+        help="Skip validation step before training.",
+    )
+
+    parser.add_argument(
+        "--fail-on-validation-warnings",
+        default=False,
+        action="store_true",
+        help="Fail on validation warnings. "
+        "If omitted only errors will exit with a non zero status code",
+    )
+
+    parser.add_argument(
+        "--validation-max-history",
+        type=int,
+        default=None,
+        help="Number of turns taken into account for story structure validation.",
+    )
+
+
 def add_augmentation_param(
     parser: Union[argparse.ArgumentParser, argparse._ActionsContainer]
 ) -> None:
@@ -179,7 +215,6 @@ def _add_num_threads_param(
     parser.add_argument(
         "--num-threads",
         type=int,
-        default=1,
         help="Maximum amount of threads to use when training.",
     )
 
@@ -223,7 +258,6 @@ def add_finetune_params(
     parser.add_argument(
         "--epoch-fraction",
         type=float,
-        default=1.0,
         help="Fraction of epochs which are currently specified in the model "
         "configuration which should be used when finetuning a model.",
     )

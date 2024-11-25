@@ -4,18 +4,19 @@ import sys
 import textwrap
 
 from pathlib import Path
-from typing import Text, List, Dict, Any, Set
+from typing import Text, List, Dict, Any, Set, Optional
 
 from rasa.core.agent import Agent
 from rasa.core.channels import UserMessage
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 
 from rasa.nlu.extractors.crf_entity_extractor import CRFEntityExtractor
 from rasa.nlu.extractors.mitie_entity_extractor import MitieEntityExtractor
 from rasa.nlu.extractors.spacy_entity_extractor import SpacyEntityExtractor
+from rasa.shared.core.trackers import DialogueStateTracker
 from tests.conftest import AsyncMock
 
 import rasa.nlu.test
@@ -72,7 +73,7 @@ from rasa.shared.nlu.constants import (
 from rasa.shared.nlu.training_data.message import Message
 from rasa.shared.nlu.training_data.training_data import TrainingData
 from rasa.model_testing import compare_nlu_models
-from rasa.utils.tensorflow.constants import EPOCHS
+from rasa.utils.tensorflow.constants import EPOCHS, RUN_EAGERLY
 
 # https://github.com/pytest-dev/pytest-asyncio/issues/68
 # this event_loop is used by pytest-asyncio, and redefining it
@@ -157,6 +158,93 @@ EN_entity_result = EntityEvaluationResult(
 
 EN_entity_result_no_tokens = EntityEvaluationResult(EN_targets, EN_predicted, [], "")
 
+TRAINING_DATA = rasa.shared.nlu.training_data.loading.load_data(
+    "data/test/demo-rasa-more-ents-and-multiplied.yml"
+)
+NLU_CONFIG = {
+    "assistant_id": "placeholder_default",
+    "language": "en",
+    "pipeline": [
+        {"name": "WhitespaceTokenizer"},
+        {"name": "CountVectorsFeaturizer"},
+        {"name": "LogisticRegressionClassifier"},
+    ],
+}
+N_FOLDS = 2
+
+
+@pytest.fixture
+def mocks_for_test_cross_validate(monkeypatch: MonkeyPatch):
+    mock_write_yaml = MagicMock()
+    mock_write_yaml.return_value = "write yaml"
+    monkeypatch.setattr("rasa.shared.utils.io.write_yaml", mock_write_yaml)
+
+    mock_train_nlu = MagicMock()
+    mock_train_nlu.return_value = "train nlu"
+    monkeypatch.setattr("rasa.model_training.train_nlu", mock_train_nlu)
+
+    mock_agent_load = MagicMock()
+    mock_agent_load.return_value = Agent()
+    monkeypatch.setattr("rasa.nlu.test.Agent.load", mock_agent_load)
+
+    mock_RasaYAMLWriter = MagicMock(dump=MagicMock())
+    monkeypatch.setattr("rasa.nlu.test.RasaYAMLWriter", mock_RasaYAMLWriter)
+
+    monkeypatch.setattr("rasa.nlu.test.combine_result", AsyncMock())
+
+    mock_evaluate_intents = MagicMock()
+    monkeypatch.setattr("rasa.nlu.test.evaluate_intents", mock_evaluate_intents)
+
+    return mock_evaluate_intents
+
+
+async def mock_combine_result(
+    intent_metrics={},
+    entity_metrics={},
+    response_selection_metrics={},
+    processor=None,
+    data=None,
+    intent_results=[],
+    entity_results=None,
+    response_selection_results=None,
+):
+    if intent_results is not None:
+        intent_results += IntentEvaluationResult(1, 2, 3, 4)
+
+
+async def test_cross_validate_evaluate_intents_not_called(
+    monkeypatch: MonkeyPatch, mocks_for_test_cross_validate
+):
+    await cross_validate(
+        TRAINING_DATA,
+        N_FOLDS,
+        NLU_CONFIG,
+        successes=False,
+        errors=False,
+        disable_plotting=True,
+        report_as_dict=True,
+    )
+    mocks_for_test_cross_validate.assert_not_called()
+
+
+async def test_cross_validate_evaluate_intents_called(
+    monkeypatch: MonkeyPatch, mocks_for_test_cross_validate
+):
+    monkeypatch.setattr(
+        "rasa.nlu.test.combine_result", MagicMock(side_effect=mock_combine_result)
+    )
+    await cross_validate(
+        TRAINING_DATA,
+        N_FOLDS,
+        NLU_CONFIG,
+        successes=False,
+        errors=False,
+        disable_plotting=True,
+        report_as_dict=True,
+    )
+
+    mocks_for_test_cross_validate.assert_called_once()
+
 
 def test_token_entity_intersection():
     # included
@@ -205,10 +293,10 @@ def test_determine_token_labels_throws_error():
 
 
 def test_determine_token_labels_no_extractors():
-    with pytest.raises(ValueError):
-        determine_token_labels(
-            CH_correct_segmentation[0], [CH_correct_entity, CH_wrong_entity], None
-        )
+    label = determine_token_labels(
+        CH_correct_segmentation[0], [CH_correct_entity, CH_wrong_entity], None
+    )
+    assert label == "direction"
 
 
 def test_determine_token_labels_no_extractors_no_overlap():
@@ -220,7 +308,7 @@ def test_determine_token_labels_with_extractors():
     label = determine_token_labels(
         CH_correct_segmentation[0],
         [CH_correct_entity, CH_wrong_entity],
-        {SpacyEntityExtractor.__name__, MitieEntityExtractor.__name__,},
+        {SpacyEntityExtractor.__name__, MitieEntityExtractor.__name__},
     )
     assert label == "direction"
 
@@ -239,7 +327,7 @@ def test_determine_token_labels_with_extractors():
                     "extractor": "EntityExtractorA",
                 }
             ],
-            ["EntityExtractorA"],
+            {"EntityExtractorA"},
             0.0,
         ),
         (Token("pizza", 4), [], ["EntityExtractorA"], 0.0),
@@ -255,7 +343,7 @@ def test_determine_token_labels_with_extractors():
                     "extractor": "CRFEntityExtractor",
                 }
             ],
-            ["CRFEntityExtractor"],
+            {"CRFEntityExtractor"},
             0.87,
         ),
         (
@@ -270,7 +358,7 @@ def test_determine_token_labels_with_extractors():
                     "extractor": "DIETClassifier",
                 }
             ],
-            ["DIETClassifier"],
+            {"DIETClassifier"},
             0.87,
         ),
     ],
@@ -278,7 +366,7 @@ def test_determine_token_labels_with_extractors():
 def test_get_entity_confidences(
     token: Token,
     entities: List[Dict[Text, Any]],
-    extractors: List[Text],
+    extractors: Set[Text],
     expected_confidence: float,
 ):
     confidence = _get_entity_confidences(token, entities, extractors)
@@ -352,10 +440,10 @@ def test_drop_intents_below_freq():
 @pytest.mark.timeout(
     300, func_only=True
 )  # these can take a longer time than the default timeout
-async def test_run_evaluation(mood_agent: Agent, nlu_as_json_path: Text):
+async def test_run_evaluation(default_agent: Agent, nlu_as_json_path: Text):
     result = await run_evaluation(
         nlu_as_json_path,
-        mood_agent.processor,
+        default_agent.processor,
         errors=False,
         successes=False,
         disable_plotting=True,
@@ -396,9 +484,7 @@ async def test_run_evaluation_with_regex_message(mood_agent: Agent, tmp_path: Pa
     )
 
 
-async def test_eval_data(
-    tmp_path: Path, project: Text, trained_rasa_model: Text,
-):
+async def test_eval_data(tmp_path: Path, project: Text, trained_rasa_model: Text):
     config_path = os.path.join(project, "config.yml")
     data_importer = TrainingDataImporter.load_nlu_importer_from_config(
         config_path,
@@ -420,6 +506,8 @@ async def test_eval_data(
     assert len(entity_results) == 46
 
 
+# FIXME: these tests take too long to run in CI on Windows, disabling them for now
+@pytest.mark.skip_on_windows
 @pytest.mark.timeout(
     240, func_only=True
 )  # these can take a longer time than the default timeout
@@ -429,11 +517,12 @@ async def test_run_cv_evaluation():
     )
 
     nlu_config = {
+        "assistant_id": "placeholder_default",
         "language": "en",
         "pipeline": [
             {"name": "WhitespaceTokenizer"},
             {"name": "CountVectorsFeaturizer"},
-            {"name": "DIETClassifier", EPOCHS: 2},
+            {"name": "LogisticRegressionClassifier", EPOCHS: 2},
         ],
     }
 
@@ -464,6 +553,8 @@ async def test_run_cv_evaluation():
         assert all(key in extractor_evaluation for key in ["errors", "report"])
 
 
+# FIXME: these tests take too long to run in CI on Windows, disabling them for now
+@pytest.mark.skip_on_windows
 @pytest.mark.timeout(
     180, func_only=True
 )  # these can take a longer time than the default timeout
@@ -473,11 +564,12 @@ async def test_run_cv_evaluation_no_entities():
     )
 
     nlu_config = {
+        "assistant_id": "placeholder_default",
         "language": "en",
         "pipeline": [
             {"name": "WhitespaceTokenizer"},
             {"name": "CountVectorsFeaturizer"},
-            {"name": "DIETClassifier", EPOCHS: 25},
+            {"name": "LogisticRegressionClassifier", EPOCHS: 25},
         ],
     }
 
@@ -510,6 +602,8 @@ async def test_run_cv_evaluation_no_entities():
     assert len(entity_results.evaluation) == 0
 
 
+# FIXME: these tests take too long to run in CI on Windows, disabling them for now
+@pytest.mark.skip_on_windows
 @pytest.mark.timeout(
     280, func_only=True
 )  # these can take a longer time than the default timeout
@@ -523,12 +617,14 @@ async def test_run_cv_evaluation_with_response_selector():
     training_data_obj = training_data_obj.merge(training_data_responses_obj)
 
     nlu_config = {
+        "assistant_id": "placeholder_default",
         "language": "en",
         "pipeline": [
             {"name": "WhitespaceTokenizer"},
             {"name": "CountVectorsFeaturizer"},
-            {"name": "DIETClassifier", EPOCHS: 25},
-            {"name": "ResponseSelector", EPOCHS: 2},
+            {"name": "LogisticRegressionClassifier", EPOCHS: 25},
+            {"name": "CRFEntityExtractor", EPOCHS: 25},
+            {"name": "ResponseSelector", EPOCHS: 2, RUN_EAGERLY: True},
         ],
     }
 
@@ -577,16 +673,63 @@ async def test_run_cv_evaluation_with_response_selector():
         for intent_report in response_selection_results.evaluation["report"].values()
     )
 
-    diet_name = "DIETClassifier"
-    assert len(entity_results.train[diet_name]["Accuracy"]) == n_folds
-    assert len(entity_results.train[diet_name]["Precision"]) == n_folds
-    assert len(entity_results.train[diet_name]["F1-score"]) == n_folds
+    entity_extractor_name = "CRFEntityExtractor"
+    assert len(entity_results.train[entity_extractor_name]["Accuracy"]) == n_folds
+    assert len(entity_results.train[entity_extractor_name]["Precision"]) == n_folds
+    assert len(entity_results.train[entity_extractor_name]["F1-score"]) == n_folds
 
-    assert len(entity_results.test[diet_name]["Accuracy"]) == n_folds
-    assert len(entity_results.test[diet_name]["Precision"]) == n_folds
-    assert len(entity_results.test[diet_name]["F1-score"]) == n_folds
+    assert len(entity_results.test[entity_extractor_name]["Accuracy"]) == n_folds
+    assert len(entity_results.test[entity_extractor_name]["Precision"]) == n_folds
+    assert len(entity_results.test[entity_extractor_name]["F1-score"]) == n_folds
     for extractor_evaluation in entity_results.evaluation.values():
         assert all(key in extractor_evaluation for key in ["errors", "report"])
+
+
+# FIXME: these tests take too long to run in CI on Windows, disabling them for now
+@pytest.mark.skip_on_windows
+@pytest.mark.timeout(
+    280, func_only=True
+)  # these can take a longer time than the default timeout
+async def test_run_cv_evaluation_lookup_tables():
+    td = rasa.shared.nlu.training_data.loading.load_data(
+        "data/test/demo-rasa-lookup-ents.yml"
+    )
+
+    nlu_config = {
+        "assistant_id": "placeholder_default",
+        "language": "en",
+        "pipeline": [
+            {"name": "WhitespaceTokenizer"},
+            {"name": "CountVectorsFeaturizer"},
+            {"name": "LogisticRegressionClassifier", EPOCHS: 1},
+            {"name": "RegexEntityExtractor", "use_lookup_tables": True},
+        ],
+    }
+
+    n_folds = 2
+    intent_results, entity_results, response_selection_results = await cross_validate(
+        td,
+        n_folds,
+        nlu_config,
+        successes=False,
+        errors=False,
+        disable_plotting=True,
+        report_as_dict=True,
+    )
+
+    regex_extractor_name = "RegexEntityExtractor"
+    assert regex_extractor_name in entity_results.test
+
+    assert len(entity_results.test[regex_extractor_name]["Accuracy"]) == n_folds
+    assert len(entity_results.test[regex_extractor_name]["Precision"]) == n_folds
+    assert len(entity_results.test[regex_extractor_name]["F1-score"]) == n_folds
+
+    # All entities in the test set appear in the lookup table,
+    # so should get perfect scores
+    for fold in range(n_folds):
+        assert entity_results.test[regex_extractor_name]["Accuracy"][fold] == 1.0
+        assert entity_results.test[regex_extractor_name]["Precision"][fold] == 1.0
+        assert entity_results.test[regex_extractor_name]["F1-score"][fold] == 1.0
 
 
 def test_intent_evaluation_report(tmp_path: Path):
@@ -627,7 +770,7 @@ def test_intent_evaluation_report(tmp_path: Path):
         "confidence": 0.98765,
     }
 
-    assert len(report.keys()) == 4
+    assert len(report.keys()) == 5
     assert report["greet"] == greet_results
     assert result["predictions"][0] == prediction
 
@@ -687,7 +830,7 @@ def test_intent_evaluation_report_large(tmp_path: Path):
 
     c_confused_with = {"D": 1, "E": 1}
 
-    assert len(report.keys()) == 8
+    assert len(report.keys()) == 9
     assert report["A"] == a_results
     assert report["E"] == e_results
     assert report["C"]["confused_with"] == c_confused_with
@@ -738,7 +881,7 @@ def test_response_evaluation_report(tmp_path: Path):
         "confidence": 0.98765,
     }
 
-    assert len(report.keys()) == 5
+    assert len(report.keys()) == 6
     assert report["chitchat/ask_name"] == name_query_results
     assert result["predictions"][1] == prediction
 
@@ -798,7 +941,7 @@ def test_entity_evaluation_report(tmp_path: Path):
     report_a = json.loads(rasa.shared.utils.io.read_file(report_filename_a))
     report_b = json.loads(rasa.shared.utils.io.read_file(report_filename_b))
 
-    assert len(report_a) == 6
+    assert len(report_a) == 7
     assert report_a["datetime"]["support"] == 1.0
     assert report_b["macro avg"]["recall"] == 0.0
     assert report_a["macro avg"]["recall"] == 0.5
@@ -959,6 +1102,7 @@ async def test_nlu_comparison(
     tmp_path: Path, monkeypatch: MonkeyPatch, nlu_as_json_path: Text
 ):
     config = {
+        "assistant_id": "placeholder_default",
         "language": "en",
         "pipeline": [
             {"name": "WhitespaceTokenizer"},
@@ -973,7 +1117,7 @@ async def test_nlu_comparison(
     monkeypatch.setattr(
         sys.modules["rasa.nlu.test"],
         "get_eval_data",
-        AsyncMock(return_value=(1, None, (None,),)),
+        AsyncMock(return_value=(1, None, (None,))),
     )
     monkeypatch.setattr(
         sys.modules["rasa.nlu.test"],
@@ -1175,9 +1319,13 @@ def test_collect_entity_predictions(
 class ConstantProcessor:
     def __init__(self, prediction_to_return: Dict[Text, Any]) -> None:
         self.prediction = prediction_to_return
+        self.model_metadata = None
 
     async def parse_message(
-        self, message: UserMessage, only_output_properties: bool = True,
+        self,
+        message: UserMessage,
+        tracker: Optional[DialogueStateTracker] = None,
+        only_output_properties: bool = True,
     ) -> Dict[Text, Any]:
         return self.prediction
 

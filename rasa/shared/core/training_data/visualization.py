@@ -1,7 +1,18 @@
 from collections import defaultdict, deque
 
 import random
-from typing import Any, Text, List, Dict, Optional, TYPE_CHECKING, Set
+from typing import (
+    Any,
+    Text,
+    List,
+    Deque,
+    Dict,
+    Optional,
+    Set,
+    TYPE_CHECKING,
+    Union,
+    cast,
+)
 
 import rasa.shared.utils.io
 from rasa.shared.constants import INTENT_MESSAGE_PREFIX
@@ -41,10 +52,10 @@ class UserMessageGenerator:
     def _create_reverse_mapping(
         data: "TrainingData",
     ) -> Dict[Dict[Text, Any], List["Message"]]:
-        """Create a mapping from intent to messages
+        """Create a mapping from intent to messages.
 
-        This allows a faster intent lookup."""
-
+        This allows a faster intent lookup.
+        """
         d = defaultdict(list)
         for example in data.training_examples:
             if example.get(INTENT, {}) is not None:
@@ -84,11 +95,11 @@ def _fingerprint_node(
     remember max history number of nodes we have visited. Hence, if we randomly
     walk on our directed graph, always only remembering the last `max_history`
     nodes we have visited, we can never remember if we have visited node A or
-    node B if both have the same fingerprint."""
-
+    node B if both have the same fingerprint.
+    """
     # the candidate list contains all node paths that haven't been
     # extended till `max_history` length yet.
-    candidates = deque()
+    candidates: Deque = deque()
     candidates.append([node])
     continuations = []
     while len(candidates) > 0:
@@ -129,8 +140,8 @@ def _outgoing_edges_are_similar(
     it doesn't matter if you are in a or b.
 
     As your path will be the same because the outgoing edges will lead you to
-    the same nodes anyways."""
-
+    the same nodes anyways.
+    """
     ignored = {node_b, node_a}
     a_edges = {
         (target, k)
@@ -166,8 +177,8 @@ def _add_edge(
     **kwargs: Any,
 ) -> None:
     """Adds an edge to the graph if the edge is not already present. Uses the
-    label as the key."""
-
+    label as the key.
+    """
     if key is None:
         key = EDGE_NONE_LABEL
 
@@ -186,8 +197,8 @@ def _transfer_style(
 ) -> Dict[Text, Any]:
     """Copy over class names from source to target for all special classes.
 
-    Used if a node is highlighted and merged with another node."""
-
+    Used if a node is highlighted and merged with another node.
+    """
     clazzes = source.get("class", "")
 
     special_classes = {"dashed", "active"}
@@ -205,7 +216,6 @@ def _transfer_style(
 
 def _merge_equivalent_nodes(graph: "networkx.MultiDiGraph", max_history: int) -> None:
     """Searches for equivalent nodes in the graph and merges them."""
-
     changed = True
     # every node merge changes the graph and can trigger previously
     # impossible node merges - we need to repeat until
@@ -256,7 +266,7 @@ def _merge_equivalent_nodes(graph: "networkx.MultiDiGraph", max_history: int) ->
 
 
 def _replace_edge_labels_with_nodes(
-    graph: "networkx.MultiDiGraph", next_id: int, nlu_training_data: "TrainingData",
+    graph: "networkx.MultiDiGraph", next_id: int, nlu_training_data: "TrainingData"
 ) -> None:
     """Replaces edge labels with nodes.
 
@@ -324,20 +334,26 @@ def persist_graph(graph: "networkx.Graph", output_file: Text) -> None:
 
 def _length_of_common_action_prefix(this: List[Event], other: List[Event]) -> int:
     """Calculate number of actions that two conversations have in common."""
-
     num_common_actions = 0
-    t_cleaned = [e for e in this if e.type_name in {"user", "action"}]
-    o_cleaned = [e for e in other if e.type_name in {"user", "action"}]
+    t_cleaned = cast(
+        List[Union[ActionExecuted, UserUttered]],
+        [e for e in this if e.type_name in {"user", "action"}],
+    )
+    o_cleaned = cast(
+        List[Union[ActionExecuted, UserUttered]],
+        [e for e in other if e.type_name in {"user", "action"}],
+    )
 
     for i, e in enumerate(t_cleaned):
+        o = o_cleaned[i]
         if i == len(o_cleaned):
             break
-        elif isinstance(e, UserUttered) and isinstance(o_cleaned[i], UserUttered):
+        elif isinstance(e, UserUttered) and isinstance(o, UserUttered):
             continue
         elif (
             isinstance(e, ActionExecuted)
-            and isinstance(o_cleaned[i], ActionExecuted)
-            and o_cleaned[i].action_name == e.action_name
+            and isinstance(o, ActionExecuted)
+            and o.action_name == e.action_name
         ):
             num_common_actions += 1
         else:
@@ -347,7 +363,6 @@ def _length_of_common_action_prefix(this: List[Event], other: List[Event]) -> in
 
 def _add_default_nodes(graph: "networkx.MultiDiGraph", fontsize: int = 12) -> None:
     """Add the standard nodes we need."""
-
     graph.add_node(
         START_NODE_ID,
         label="START",
@@ -369,7 +384,6 @@ def _add_default_nodes(graph: "networkx.MultiDiGraph", fontsize: int = 12) -> No
 
 def _create_graph(fontsize: int = 12) -> "networkx.MultiDiGraph":
     """Create a graph and adds the default nodes."""
-
     import networkx as nx
 
     graph = nx.MultiDiGraph()
@@ -385,7 +399,6 @@ def _add_message_edge(
     is_current: bool,
 ) -> None:
     """Create an edge based on the user message."""
-
     if message:
         message_key = message.get("intent", {}).get("name", None)
         message_label = message.get("text", None)
@@ -438,7 +451,7 @@ def visualize_neighborhood(
                 break
             if isinstance(el, UserUttered):
                 message = el.parse_data
-                message[TEXT] = f"{INTENT_MESSAGE_PREFIX}{el.intent_name}"
+                message[TEXT] = f"{INTENT_MESSAGE_PREFIX}{el.intent_name}"  # type: ignore[literal-required]  # noqa: E501
             elif (
                 isinstance(el, ActionExecuted) and el.action_name != ACTION_LISTEN_NAME
             ):
@@ -462,16 +475,20 @@ def visualize_neighborhood(
         # this can either be an ellipsis "...", the conversation end node
         # "END" or a "TMP" node if this is the active conversation
         if is_current:
+            event_idx = events[idx]
             if (
-                isinstance(events[idx], ActionExecuted)
-                and events[idx].action_name == ACTION_LISTEN_NAME
+                isinstance(event_idx, ActionExecuted)
+                and event_idx.action_name == ACTION_LISTEN_NAME
             ):
                 next_node_idx += 1
+                if message is None:
+                    label = "  ?  "
+                else:
+                    intent = cast(dict, message).get("intent", {})
+                    label = intent.get("name", "  ?  ")
                 graph.add_node(
                     next_node_idx,
-                    label="  ?  "
-                    if not message
-                    else message.get("intent", {}).get("name", "  ?  "),
+                    label=label,
                     shape="rect",
                     **{"class": "intent dashed active"},
                 )
@@ -509,20 +526,19 @@ def _remove_auxiliary_nodes(
     graph: "networkx.MultiDiGraph", special_node_idx: int
 ) -> None:
     """Remove any temporary or unused nodes."""
-
     graph.remove_node(TMP_NODE_ID)
 
-    if not len(list(graph.predecessors(END_NODE_ID))):
+    if not graph.predecessors(END_NODE_ID):
         graph.remove_node(END_NODE_ID)
 
     # remove duplicated "..." nodes after merging
-    ps = set()
+    predecessors_seen = set()
     for i in range(special_node_idx + 1, TMP_NODE_ID):
-        for pred in list(graph.predecessors(i)):
-            if pred in ps:
+        predecessors = graph.predecessors(i)
+        for pred in predecessors:
+            if pred in predecessors_seen:
                 graph.remove_node(i)
-            else:
-                ps.add(pred)
+        predecessors_seen.update(predecessors)
 
 
 def visualize_stories(

@@ -3,6 +3,9 @@ import shutil
 from pathlib import Path
 from shutil import copyfile
 
+from pytest import Testdir, Pytester, ExitCode
+from _pytest.pytester import RunResult
+
 from rasa.core.constants import (
     CONFUSION_MATRIX_STORIES_FILE,
     STORIES_WITH_WARNINGS_FILE,
@@ -11,7 +14,8 @@ from rasa.constants import RESULTS_FILE
 from rasa.shared.constants import DEFAULT_RESULTS_PATH
 from rasa.shared.utils.io import list_files, write_yaml, write_text_file
 from typing import Callable
-from _pytest.pytester import RunResult, Testdir, Pytester, ExitCode
+
+from tests.cli.conftest import RASA_EXE
 
 
 def test_test_core(run_in_simple_project: Callable[..., RunResult]):
@@ -47,7 +51,7 @@ def test_test_core_warnings(run_in_simple_project_with_model: Callable[..., RunR
     )
 
     simple_test_story_yaml = """
-version: "3.0"
+version: "{LATEST_TRAINING_DATA_FORMAT_VERSION}"
 stories:
 - story: unlikely path
   steps:
@@ -59,7 +63,7 @@ stories:
   - intent: affirm
   - action: utter_happy
 """
-    with open("tests/test_stories.yaml", "w") as f:
+    with open("tests/test_stories.yml", "w") as f:
         f.write(simple_test_story_yaml)
 
     run_in_simple_project_with_model("test", "core", "--no-warnings")
@@ -100,7 +104,7 @@ def test_test_with_no_user_utterance(
     run_in_simple_project_with_model: Callable[..., RunResult]
 ):
     write_yaml(
-        {"pipeline": "KeywordIntentClassifier", "policies": [{"name": "TEDPolicy"}],},
+        {"pipeline": "KeywordIntentClassifier", "policies": [{"name": "TEDPolicy"}]},
         "config.yml",
     )
 
@@ -161,10 +165,16 @@ def test_test_nlu_cross_validation_with_autoconfig(
     nlu_path = str(testdir.tmpdir / "nlu.yml")
     shutil.copy(str(moodbot_nlu_data_path), nlu_path)
     write_yaml(
-        {"language": "en", "pipeline": None, "policies": None,}, config_path,
+        {
+            "assistant_id": "placeholder_default",
+            "language": "en",
+            "pipeline": None,
+            "policies": None,
+        },
+        config_path,
     )
     args = [
-        shutil.which("rasa"),
+        shutil.which(RASA_EXE),
         "test",
         "nlu",
         "--cross-validation",
@@ -262,49 +272,54 @@ def test_test_core_comparison_after_train(
 def test_test_help(run: Callable[..., RunResult]):
     output = run("test", "--help")
 
-    help_text = """usage: rasa test [-h] [-v] [-vv] [--quiet] [-m MODEL] [-s STORIES]
-                 [--max-stories MAX_STORIES] [--endpoints ENDPOINTS]
-                 [--fail-on-prediction-errors] [--url URL]
-                 [--evaluate-model-directory] [-u NLU]
-                 [-c CONFIG [CONFIG ...]] [--cross-validation] [-f FOLDS]
-                 [-r RUNS] [-p PERCENTAGES [PERCENTAGES ...]] [--no-plot]
-                 [--successes] [--no-errors] [--no-warnings] [--out OUT]
-                 {core,nlu} ..."""
+    help_text = f"""usage: {RASA_EXE} test [-h] [-v] [-vv] [--quiet]
+                 [--logging-config-file LOGGING_CONFIG_FILE] [-m MODEL]
+                 [-s STORIES] [--max-stories MAX_STORIES]
+                 [--endpoints ENDPOINTS] [--fail-on-prediction-errors]
+                 [--url URL] [--evaluate-model-directory] [-u NLU]
+                 [-c CONFIG [CONFIG ...]] [-d DOMAIN] [--cross-validation]
+                 [-f FOLDS] [-r RUNS] [-p PERCENTAGES [PERCENTAGES ...]]
+                 [--no-plot] [--successes] [--no-errors] [--no-warnings]
+                 [--out OUT]
+                 {{core,nlu}} ..."""
 
     lines = help_text.split("\n")
     # expected help text lines should appear somewhere in the output
-    printed_help = set(output.outlines)
+    printed_help = {line.strip() for line in output.outlines}
     for line in lines:
-        assert line in printed_help
+        assert line.strip() in printed_help
 
 
 def test_test_nlu_help(run: Callable[..., RunResult]):
     output = run("test", "nlu", "--help")
 
-    help_text = """usage: rasa test nlu [-h] [-v] [-vv] [--quiet] [-m MODEL] [-u NLU] [--out OUT]
-                     [-c CONFIG [CONFIG ...]] [--cross-validation] [-f FOLDS]
-                     [-r RUNS] [-p PERCENTAGES [PERCENTAGES ...]] [--no-plot]
+    help_text = f"""usage: {RASA_EXE} test nlu [-h] [-v] [-vv] [--quiet]
+                     [--logging-config-file LOGGING_CONFIG_FILE] [-m MODEL]
+                     [-u NLU] [--out OUT] [-c CONFIG [CONFIG ...]] [-d DOMAIN]
+                     [--cross-validation] [-f FOLDS] [-r RUNS]
+                     [-p PERCENTAGES [PERCENTAGES ...]] [--no-plot]
                      [--successes] [--no-errors] [--no-warnings]"""
 
     lines = help_text.split("\n")
     # expected help text lines should appear somewhere in the output
-    printed_help = set(output.outlines)
+    printed_help = {line.strip() for line in output.outlines}
     for line in lines:
-        assert line in printed_help
+        assert line.strip() in printed_help
 
 
 def test_test_core_help(run: Callable[..., RunResult]):
     output = run("test", "core", "--help")
 
-    help_text = """usage: rasa test core [-h] [-v] [-vv] [--quiet] [-m MODEL [MODEL ...]]
-                      [-s STORIES] [--max-stories MAX_STORIES] [--out OUT]
-                      [--e2e] [--endpoints ENDPOINTS]
-                      [--fail-on-prediction-errors] [--url URL]
-                      [--evaluate-model-directory] [--no-plot] [--successes]
-                      [--no-errors] [--no-warnings]"""
+    help_text = f"""usage: {RASA_EXE} test core [-h] [-v] [-vv] [--quiet]
+                      [--logging-config-file LOGGING_CONFIG_FILE]
+                      [-m MODEL [MODEL ...]] [-s STORIES]
+                      [--max-stories MAX_STORIES] [--out OUT] [--e2e]
+                      [--endpoints ENDPOINTS] [--fail-on-prediction-errors]
+                      [--url URL] [--evaluate-model-directory] [--no-plot]
+                      [--successes] [--no-errors] [--no-warnings]"""
 
     lines = help_text.split("\n")
     # expected help text lines should appear somewhere in the output
-    printed_help = set(output.outlines)
+    printed_help = {line.strip() for line in output.outlines}
     for line in lines:
-        assert line in printed_help
+        assert line.strip() in printed_help

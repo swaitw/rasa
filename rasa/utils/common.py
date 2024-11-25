@@ -1,7 +1,11 @@
-import asyncio
+import copy
+import inspect
 import logging
+import logging.config
+import logging.handlers
 import os
 import shutil
+import tempfile
 import warnings
 from pathlib import Path
 from types import TracebackType
@@ -17,20 +21,35 @@ from typing import (
     Union,
     ContextManager,
     Set,
+    Tuple,
 )
 
 from socket import SOCK_DGRAM, SOCK_STREAM
 import numpy as np
 import rasa.utils.io
-from rasa.constants import DEFAULT_LOG_LEVEL_LIBRARIES, ENV_LOG_LEVEL_LIBRARIES
+from rasa.constants import (
+    DEFAULT_LOG_LEVEL_LIBRARIES,
+    ENV_LOG_LEVEL_LIBRARIES,
+    ENV_LOG_LEVEL_MATPLOTLIB,
+    ENV_LOG_LEVEL_RABBITMQ,
+    ENV_LOG_LEVEL_KAFKA,
+)
 from rasa.shared.constants import DEFAULT_LOG_LEVEL, ENV_LOG_LEVEL, TCP_PROTOCOL
+from rasa.shared.exceptions import RasaException
 import rasa.shared.utils.io
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-EXPECTED_WARNINGS = [
+EXPECTED_PILLOW_DEPRECATION_WARNINGS: List[Tuple[Type[Warning], str]] = [
+    # Keras uses deprecated Pillow features
+    # cf. https://github.com/keras-team/keras/issues/16639
+    (DeprecationWarning, f"{method} is deprecated and will be removed in Pillow 10 .*")
+    for method in ["BICUBIC", "NEAREST", "BILINEAR", "HAMMING", "BOX", "LANCZOS"]
+]
+
+EXPECTED_WARNINGS: List[Tuple[Type[Warning], str]] = [
     # TODO (issue #9932)
     (
         np.VisibleDeprecationWarning,
@@ -42,8 +61,34 @@ EXPECTED_WARNINGS = [
         "Converting sparse IndexedSlices.* to a dense Tensor of unknown "
         "shape. This may consume a large amount of memory.",
     ),
-    (UserWarning, "Slot auto-fill has been removed in 3.0 .*",),
+    (UserWarning, "Slot auto-fill has been removed in 3.0 .*"),
+    # This warning is caused by the flatbuffers package
+    # The import was fixed on Github, but the latest version
+    # is not available on PyPi, so we cannot pin the newer version.
+    # cf. https://github.com/google/flatbuffers/issues/6957
+    (DeprecationWarning, "the imp module is deprecated in favour of importlib.*"),
+    # Cannot fix this deprecation warning since we need to support two
+    # numpy versions as long as we keep python 37 around
+    (DeprecationWarning, "the `interpolation=` argument to quantile was renamed"),
+    # the next two warnings are triggered by adding 3.10 support,
+    # for more info: https://docs.python.org/3.10/whatsnew/3.10.html#deprecated
+    (DeprecationWarning, "the load_module*"),
+    (ImportWarning, "_SixMetaPathImporter.find_spec*"),
+    # 3.10 specific warning: https://github.com/pytest-dev/pytest-asyncio/issues/212
+    (DeprecationWarning, "There is no current event loop"),
+    # UserWarning which is always issued if the default value for
+    # assistant_id key in config file is not changed
+    (UserWarning, "is missing a unique value for the 'assistant_id' mandatory key.*"),
+    (
+        DeprecationWarning,
+        "non-integer arguments to randrange\\(\\) have been deprecated since",
+    ),
 ]
+
+EXPECTED_WARNINGS.extend(EXPECTED_PILLOW_DEPRECATION_WARNINGS)
+PYTHON_LOGGING_SCHEMA_DOCS = (
+    "https://docs.python.org/3/library/logging.config.html#dictionary-schema-details"
+)
 
 
 class TempDirectoryPath(str, ContextManager):
@@ -58,11 +103,26 @@ class TempDirectoryPath(str, ContextManager):
     def __exit__(
         self,
         _exc: Optional[Type[BaseException]],
-        _value: Optional[Exception],
+        _value: Optional[BaseException],
         _tb: Optional[TracebackType],
     ) -> None:
         if os.path.exists(self):
             shutil.rmtree(self)
+
+
+def get_temp_dir_name() -> Text:
+    """Returns the path name of a newly created temporary directory."""
+    tempdir_name = tempfile.mkdtemp()
+
+    return decode_bytes(tempdir_name)
+
+
+def decode_bytes(name: Union[Text, bytes]) -> Text:
+    """Converts bytes object to string."""
+    if isinstance(name, bytes):
+        name = name.decode("UTF-8")
+
+    return name
 
 
 def read_global_config(path: Text) -> Dict[Text, Any]:
@@ -81,35 +141,60 @@ def read_global_config(path: Text) -> Dict[Text, Any]:
         return {}
 
 
+def configure_logging_from_file(logging_config_file: Text) -> None:
+    """Parses YAML file content to configure logging.
+
+    Args:
+        logging_config_file: YAML file containing logging configuration to handle
+            custom formatting
+    """
+    logging_config_dict = rasa.shared.utils.io.read_yaml_file(logging_config_file)
+
+    try:
+        logging.config.dictConfig(logging_config_dict)
+    except (ValueError, TypeError, AttributeError, ImportError) as e:
+        logging.debug(
+            f"The logging config file {logging_config_file} could not "
+            f"be applied because it failed validation against "
+            f"the built-in Python logging schema. "
+            f"More info at {PYTHON_LOGGING_SCHEMA_DOCS}.",
+            exc_info=e,
+        )
+
+
 def configure_logging_and_warnings(
     log_level: Optional[int] = None,
+    logging_config_file: Optional[Text] = None,
     warn_only_once: bool = True,
     filter_repeated_logs: bool = True,
 ) -> None:
     """Sets log levels of various loggers and sets up filters for warnings and logs.
 
     Args:
-        log_level: The lo level to be used for the 'Rasa' logger. Pass `None` to use
+        log_level: The log level to be used for the 'Rasa' logger. Pass `None` to use
             either the environment variable 'LOG_LEVEL' if it is specified, or the
             default log level otherwise.
+        logging_config_file: YAML file containing logging configuration to handle
+            custom formatting
         warn_only_once: determines whether user warnings should be filtered by the
             `warnings` module to appear only "once"
         filter_repeated_logs: determines whether `RepeatedLogFilter`s are added to
             the handlers of the root logger
     """
-    if not log_level:
-        log_level = os.environ.get(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL)
-        log_level = logging.getLevelName(log_level)
+    if logging_config_file is not None:
+        configure_logging_from_file(logging_config_file)
+
+    if log_level is None:  # Log level NOTSET is 0 so we use `is None` here
+        log_level_name = os.environ.get(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL)
+        # Change log level from str to int (note that log_level in function parameter
+        # int already, coming from CLI argparse parameter).
+        log_level = logging.getLevelName(log_level_name)
 
     logging.getLogger("rasa").setLevel(log_level)
-
-    update_tensorflow_log_level()
-    update_asyncio_log_level()
-    update_matplotlib_log_level()
-    update_apscheduler_log_level()
-    update_socketio_log_level()
-
+    # Assign log level to env variable in str format (not int). Why do we assign?
     os.environ[ENV_LOG_LEVEL] = logging.getLevelName(log_level)
+
+    configure_library_logging()
 
     if filter_repeated_logs:
         for handler in logging.getLogger().handlers:
@@ -136,6 +221,20 @@ def _filter_warnings(log_level: Optional[int], warn_only_once: bool = True) -> N
             )
 
 
+def configure_library_logging() -> None:
+    """Configures log levels of used libraries such as kafka, matplotlib, pika."""
+    library_log_level = os.environ.get(
+        ENV_LOG_LEVEL_LIBRARIES, DEFAULT_LOG_LEVEL_LIBRARIES
+    )
+    update_tensorflow_log_level()
+    update_asyncio_log_level()
+    update_apscheduler_log_level()
+    update_socketio_log_level()
+    update_matplotlib_log_level(library_log_level)
+    update_kafka_log_level(library_log_level)
+    update_rabbitmq_log_level(library_log_level)
+
+
 def update_apscheduler_log_level() -> None:
     """Configures the log level of `apscheduler.*` loggers."""
     log_level = os.environ.get(ENV_LOG_LEVEL_LIBRARIES, DEFAULT_LOG_LEVEL_LIBRARIES)
@@ -153,6 +252,7 @@ def update_apscheduler_log_level() -> None:
 
 
 def update_socketio_log_level() -> None:
+    """Set the log level of socketio."""
     log_level = os.environ.get(ENV_LOG_LEVEL_LIBRARIES, DEFAULT_LOG_LEVEL_LIBRARIES)
 
     socketio_loggers = ["websockets.protocol", "engineio.server", "socketio.server"]
@@ -212,7 +312,7 @@ def update_sanic_log_level(
         )
         socktype = SOCK_STREAM if syslog_protocol == TCP_PROTOCOL else SOCK_DGRAM
         syslog_handler = logging.handlers.SysLogHandler(
-            address=(syslog_address, syslog_port), socktype=socktype,
+            address=(syslog_address, syslog_port), socktype=socktype
         )
         syslog_handler.setFormatter(formatter)
         logger.addHandler(syslog_handler)
@@ -229,21 +329,37 @@ def update_asyncio_log_level() -> None:
     logging.getLogger("asyncio").setLevel(log_level)
 
 
-def update_matplotlib_log_level() -> None:
-    """Set the log level of matplotlib to the log level.
+def update_matplotlib_log_level(library_log_level: Text) -> None:
+    """Set the log level of matplotlib.
 
-    Uses the log level specified in the environment variable 'LOG_LEVEL_LIBRARIES'.
+    Uses the library specific log level or the general libraries log level.
     """
-    log_level = os.environ.get(ENV_LOG_LEVEL_LIBRARIES, DEFAULT_LOG_LEVEL_LIBRARIES)
-    logging.getLogger("matplotlib.backends.backend_pdf").setLevel(log_level)
-    logging.getLogger("matplotlib.colorbar").setLevel(log_level)
-    logging.getLogger("matplotlib.font_manager").setLevel(log_level)
-    logging.getLogger("matplotlib.ticker").setLevel(log_level)
+    log_level = os.environ.get(ENV_LOG_LEVEL_MATPLOTLIB, library_log_level)
+    logging.getLogger("matplotlib").setLevel(log_level)
+
+
+def update_kafka_log_level(library_log_level: Text) -> None:
+    """Set the log level of kafka.
+
+    Uses the library specific log level or the general libraries log level.
+    """
+    log_level = os.environ.get(ENV_LOG_LEVEL_KAFKA, library_log_level)
+    logging.getLogger("kafka").setLevel(log_level)
+
+
+def update_rabbitmq_log_level(library_log_level: Text) -> None:
+    """Set the log level of pika.
+
+    Uses the library specific log level or the general libraries log level.
+    """
+    log_level = os.environ.get(ENV_LOG_LEVEL_RABBITMQ, library_log_level)
+    logging.getLogger("aio_pika").setLevel(log_level)
+    logging.getLogger("aiormq").setLevel(log_level)
 
 
 def sort_list_of_dicts_by_first_key(dicts: List[Dict]) -> List[Dict]:
     """Sorts a list of dictionaries by their first key."""
-    return sorted(dicts, key=lambda d: list(d.keys())[0])
+    return sorted(dicts, key=lambda d: next(iter(d.keys())))
 
 
 def write_global_config_value(name: Text, value: Any) -> bool:
@@ -301,13 +417,41 @@ def update_existing_keys(
     """Iterate through all the updates and update a value in the original dictionary.
 
     If the updates contain a key that is not present in the original dict, it will
-    be ignored."""
-
+    be ignored.
+    """
     updated = original.copy()
     for k, v in updates.items():
         if k in updated:
             updated[k] = v
     return updated
+
+
+def override_defaults(
+    defaults: Optional[Dict[Text, Any]], custom: Optional[Dict[Text, Any]]
+) -> Dict[Text, Any]:
+    """Override default config with the given config.
+
+    We cannot use `dict.update` method because configs contain nested dicts.
+
+    Args:
+        defaults: default config
+        custom: user config containing new parameters
+
+    Returns:
+        updated config
+    """
+    config = copy.deepcopy(defaults) if defaults else {}
+
+    if not custom:
+        return config
+
+    for key in custom.keys():
+        if isinstance(config.get(key), dict):
+            config[key].update(custom[key])
+            continue
+        config[key] = custom[key]
+
+    return config
 
 
 class RepeatedLogFilter(logging.Filter):
@@ -342,7 +486,7 @@ async def call_potential_coroutine(
     Returns:
         The return value of the function.
     """
-    if asyncio.iscoroutine(coroutine_or_return_value):
+    if inspect.iscoroutine(coroutine_or_return_value):
         return await coroutine_or_return_value
 
     return coroutine_or_return_value
@@ -375,11 +519,6 @@ def directory_size_in_mb(
 def copy_directory(source: Path, destination: Path) -> None:
     """Copies the content of one directory into another.
 
-    Unlike `shutil.copytree` this doesn't raise if `destination` already exists.
-
-    # TODO: Drop this in favor of `shutil.copytree(..., dirs_exist_ok=True)` when
-    # dropping Python 3.7.
-
     Args:
         source: The directory whose contents should be copied to `destination`.
         destination: The directory which should contain the content `source` in the end.
@@ -396,11 +535,7 @@ def copy_directory(source: Path, destination: Path) -> None:
             f"can only be copied to empty directories."
         )
 
-    for item in source.glob("*"):
-        if item.is_dir():
-            shutil.copytree(item, destination / item.name)
-        else:
-            shutil.copy2(item, destination / item.name)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
 def find_unavailable_packages(package_names: List[Text]) -> Set[Text]:
@@ -427,3 +562,29 @@ def find_unavailable_packages(package_names: List[Text]) -> Set[Text]:
 def module_path_from_class(clazz: Type) -> Text:
     """Return the module path of an instance's class."""
     return clazz.__module__ + "." + clazz.__name__
+
+
+def get_bool_env_variable(variable_name: str, default_variable_value: bool) -> bool:
+    """Fetch bool value stored in environment variable.
+
+    If environment variable is set but value is
+    not of boolean nature, an exception will be raised.
+
+    Args: variable_name:
+        Name of the environment variable.
+        default_variable_value: Value to be returned if environment variable is not set.
+
+    Returns:
+        A boolean value stored in the environment variable
+        or default value if environment variable is not set.
+    """
+    true_values = (str(True).lower(), str(1).lower())
+    false_values = (str(False).lower(), str(0).lower())
+    value = os.getenv(variable_name, default=str(default_variable_value))
+
+    if value.lower() not in true_values + false_values:
+        raise RasaException(
+            f"Invalid value `{value}` for variable `{variable_name}`. "
+            f"Available values are `{true_values + false_values}`"
+        )
+    return value.lower() in true_values

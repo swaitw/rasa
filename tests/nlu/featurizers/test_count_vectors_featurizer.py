@@ -240,7 +240,7 @@ def test_count_vector_featurizer_shared_vocab(
     create_featurizer: Callable[..., CountVectorsFeaturizer],
     whitespace_tokenizer: WhitespaceTokenizer,
 ):
-    ftr = create_featurizer({"use_shared_vocab": True,})
+    ftr = create_featurizer({"use_shared_vocab": True})
 
     train_message = Message(data={TEXT: sentence})
     # this is needed for a valid training example
@@ -323,7 +323,7 @@ def test_count_vector_featurizer_oov_words(
     whitespace_tokenizer: WhitespaceTokenizer,
 ):
     ftr = create_featurizer(
-        {"OOV_token": "__oov__", "OOV_words": ["oov_word0", "OOV_word1"],}
+        {"OOV_token": "__oov__", "OOV_words": ["oov_word0", "OOV_word1"]}
     )
     train_message = Message(data={TEXT: sentence})
     whitespace_tokenizer.process([train_message])
@@ -397,7 +397,7 @@ def test_count_vector_featurizer_char(
     create_featurizer: Callable[..., CountVectorsFeaturizer],
     whitespace_tokenizer: WhitespaceTokenizer,
 ):
-    ftr = create_featurizer({"min_ngram": 1, "max_ngram": 2, "analyzer": "char",})
+    ftr = create_featurizer({"min_ngram": 1, "max_ngram": 2, "analyzer": "char"})
 
     train_message = Message(data={TEXT: sentence})
     whitespace_tokenizer.process([train_message])
@@ -621,7 +621,7 @@ def test_count_vector_featurizer_action_attribute_featurization(
     create_featurizer: Callable[..., CountVectorsFeaturizer],
     whitespace_tokenizer: WhitespaceTokenizer,
 ):
-    ftr = create_featurizer({"token_pattern": r"(?u)\b\w+\b",})
+    ftr = create_featurizer({"token_pattern": r"(?u)\b\w+\b"})
 
     train_message = Message(data={TEXT: sentence})
     # this is needed for a valid training example
@@ -687,7 +687,7 @@ def test_count_vector_featurizer_process_by_attribute(
     create_featurizer: Callable[..., CountVectorsFeaturizer],
     whitespace_tokenizer: WhitespaceTokenizer,
 ):
-    ftr = create_featurizer({"token_pattern": r"(?u)\b\w+\b",})
+    ftr = create_featurizer({"token_pattern": r"(?u)\b\w+\b"})
 
     # add a second example that has some response, so that the vocabulary for
     # response exists
@@ -773,7 +773,7 @@ def test_cvf_incremental_training(
 
 @pytest.mark.parametrize(
     "initial_train_text, additional_train_text, " "use_shared_vocab",
-    [("am I the coolest person?", "no", True), ("rasa rasa", "sara sara", False),],
+    [("am I the coolest person?", "no", True), ("rasa rasa", "sara sara", False)],
 )
 def test_use_shared_vocab_exception(
     initial_train_text: Text,
@@ -806,3 +806,38 @@ def test_use_shared_vocab_exception(
         )
     else:
         new_cvf.train(data)
+
+
+@pytest.mark.parametrize("min_df, throws_error", [(1, False), (0.2, False), (5, True)])
+def test_create_independent_vocab_vectorizers_min_df(
+    min_df: int,
+    throws_error: bool,
+    load_featurizer: Callable[..., CountVectorsFeaturizer],
+    whitespace_tokenizer: WhitespaceTokenizer,
+):
+    config = {
+        "min_df": min_df,
+        "analyzer": "word",
+        "strip_accents": None,
+        "lowercase": True,
+        "stop_words": None,
+        "min_ngram": 1,
+        "max_ngram": 1,
+        "max_df": 1,
+        "max_features": None,
+        "use_shared_vocab": False,
+        "finetune_mode": False,
+    }
+    cvf = load_featurizer(config)
+    result = cvf._create_independent_vocab_vectorizers(config)
+    assert result["action_name"].min_df == 1
+    assert result["text"].min_df == min_df
+
+    train_message = Message(data={TEXT: "am I the coolest person?"})
+    data = TrainingData([train_message])
+    whitespace_tokenizer.process_training_data(data)
+    if throws_error:
+        with pytest.raises(Exception):
+            cvf.train(data)
+    else:
+        cvf.train(data)

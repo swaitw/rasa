@@ -2,22 +2,23 @@ import json
 from typing import Optional, Text
 
 import jsonschema
+from ruamel.yaml.error import (
+    MarkedYAMLError,
+    MarkedYAMLWarning,
+    MarkedYAMLFutureWarning,
+)
 
 
 class RasaException(Exception):
     """Base exception class for all errors raised by Rasa Open Source.
 
-    These exceptions results from invalid use cases and will be reported
+    These exceptions result from invalid use cases and will be reported
     to the users, but will be ignored in telemetry.
     """
 
 
 class RasaCoreException(RasaException):
     """Basic exception for errors raised by Rasa Core."""
-
-
-class RasaXTermsError(RasaException):
-    """Error in case the user didn't accept the Rasa X terms."""
 
 
 class InvalidParameterException(RasaException, ValueError):
@@ -31,7 +32,8 @@ class YamlException(RasaException):
         """Create exception.
 
         Args:
-            filename: optional file the error occurred in"""
+        filename: optional file the error occurred in
+        """
         self.filename = filename
 
 
@@ -54,8 +56,16 @@ class YamlSyntaxException(YamlException):
             exception_text = "Failed to read YAML."
 
         if self.underlying_yaml_exception:
-            self.underlying_yaml_exception.warn = None
-            self.underlying_yaml_exception.note = None
+            if isinstance(
+                self.underlying_yaml_exception,
+                (MarkedYAMLError, MarkedYAMLWarning, MarkedYAMLFutureWarning),
+            ):
+                self.underlying_yaml_exception.note = None
+            if isinstance(
+                self.underlying_yaml_exception,
+                (MarkedYAMLWarning, MarkedYAMLFutureWarning),
+            ):
+                self.underlying_yaml_exception.warn = None
             exception_text += f" {self.underlying_yaml_exception}"
 
         if self.filename:

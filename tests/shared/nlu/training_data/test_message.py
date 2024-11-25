@@ -371,9 +371,7 @@ def test_features_present(
         (Message({TEXT: "text"}), True),
     ],
 )
-def test_is_core_or_domain_message(
-    message: Message, result: bool,
-):
+def test_is_core_or_domain_message(message: Message, result: bool):
     assert result == message.is_core_or_domain_message()
 
 
@@ -395,7 +393,7 @@ def test_message_fingerprint_includes_data_and_features(
     assert fp1 != fp2
 
     message.add_features(
-        Features(scipy.sparse.csr_matrix([1, 1, 0]), FEATURE_TYPE_SEQUENCE, TEXT, "c2",)
+        Features(scipy.sparse.csr_matrix([1, 1, 0]), FEATURE_TYPE_SEQUENCE, TEXT, "c2")
     )
 
     fp3 = message.fingerprint()
@@ -410,3 +408,19 @@ def test_message_fingerprint_includes_data_and_features(
     assert fp3 != fp4
 
     assert len({fp1, fp2, fp3, fp4}) == 4
+
+
+def test_message_fingerprint_is_recalculated_after_setting_data():
+    message = Message(data={TEXT: "This is a test sentence."})
+    fp1 = message.fingerprint()
+    message.set(INTENT, "test")
+    fp2 = message.fingerprint()
+    assert fp1 != fp2
+
+
+def test_message_fingerprint_is_recalculated_after_adding_diagnostics_data():
+    message = Message(data={TEXT: "This is a test sentence."})
+    fp1 = message.fingerprint()
+    message.add_diagnostic_data("origin", "test")
+    fp2 = message.fingerprint()
+    assert fp1 != fp2

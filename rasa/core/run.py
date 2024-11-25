@@ -3,9 +3,10 @@ import logging
 import uuid
 import os
 from functools import partial
-from typing import Any, List, Optional, Text, Union, Dict
+from typing import Any, List, Optional, TYPE_CHECKING, Text, Union, Dict
 
 import rasa.core.utils
+from rasa.plugin import plugin_manager
 from rasa.shared.exceptions import RasaException
 import rasa.shared.utils.common
 import rasa.utils
@@ -21,6 +22,9 @@ from rasa.core.utils import AvailableEndpoints
 import rasa.shared.utils.io
 from sanic import Sanic
 from asyncio import AbstractEventLoop
+
+if TYPE_CHECKING:
+    from aiohttp import ClientSession
 
 logger = logging.getLogger()  # get the root logger
 
@@ -70,7 +74,7 @@ def _create_single_channel(channel: Text, credentials: Dict[Text, Any]) -> Any:
 
 
 def _create_app_without_api(cors: Optional[Union[Text, List[Text]]] = None) -> Sanic:
-    app = Sanic(__name__, configure_logging=False)
+    app = Sanic("rasa_core_no_api", configure_logging=False)
     server.add_root_route(app)
     server.configure_cors(app, cors)
     return app
@@ -83,6 +87,7 @@ def configure_app(
     enable_api: bool = True,
     response_timeout: int = constants.DEFAULT_RESPONSE_TIMEOUT,
     jwt_secret: Optional[Text] = None,
+    jwt_private_key: Optional[Text] = None,
     jwt_method: Optional[Text] = None,
     route: Optional[Text] = "/webhooks/",
     port: int = constants.DEFAULT_SERVER_PORT,
@@ -93,10 +98,11 @@ def configure_app(
     syslog_address: Optional[Text] = None,
     syslog_port: Optional[int] = None,
     syslog_protocol: Optional[Text] = None,
+    request_timeout: Optional[int] = None,
 ) -> Sanic:
     """Run the agent."""
     rasa.core.utils.configure_file_logging(
-        logger, log_file, use_syslog, syslog_address, syslog_port, syslog_protocol,
+        logger, log_file, use_syslog, syslog_address, syslog_port, syslog_protocol
     )
 
     if enable_api:
@@ -105,6 +111,7 @@ def configure_app(
             auth_token=auth_token,
             response_timeout=response_timeout,
             jwt_secret=jwt_secret,
+            jwt_private_key=jwt_private_key,
             jwt_method=jwt_method,
             endpoints=endpoints,
         )
@@ -134,10 +141,12 @@ def configure_app(
             await console.record_messages(
                 server_url=constants.DEFAULT_SERVER_FORMAT.format("http", port),
                 sender_id=conversation_id,
+                request_timeout=request_timeout,
             )
 
             logger.info("Killing Sanic server now.")
             running_app.stop()  # kill the sanic server
+            plugin_manager().hook.after_server_stop()
 
         app.add_task(run_cmdline_io)
 
@@ -155,6 +164,7 @@ def serve_application(
     enable_api: bool = True,
     response_timeout: int = constants.DEFAULT_RESPONSE_TIMEOUT,
     jwt_secret: Optional[Text] = None,
+    jwt_private_key: Optional[Text] = None,
     jwt_method: Optional[Text] = None,
     endpoints: Optional[AvailableEndpoints] = None,
     remote_storage: Optional[Text] = None,
@@ -168,6 +178,7 @@ def serve_application(
     syslog_address: Optional[Text] = None,
     syslog_port: Optional[int] = None,
     syslog_protocol: Optional[Text] = None,
+    request_timeout: Optional[int] = None,
 ) -> None:
     """Run the API entrypoint."""
     if not channel and not credentials:
@@ -182,6 +193,7 @@ def serve_application(
         enable_api,
         response_timeout,
         jwt_secret,
+        jwt_private_key,
         jwt_method,
         port=port,
         endpoints=endpoints,
@@ -191,6 +203,7 @@ def serve_application(
         syslog_address=syslog_address,
         syslog_port=syslog_port,
         syslog_protocol=syslog_protocol,
+        request_timeout=request_timeout,
     )
 
     ssl_context = server.create_ssl_context(
@@ -204,6 +217,7 @@ def serve_application(
         partial(load_agent_on_start, model_path, endpoints, remote_storage),
         "before_server_start",
     )
+    app.register_listener(create_connection_pools, "after_server_start")
     app.register_listener(close_resources, "after_server_stop")
 
     number_of_workers = rasa.core.utils.number_of_sanic_workers(
@@ -215,7 +229,7 @@ def serve_application(
     )
 
     rasa.utils.common.update_sanic_log_level(
-        log_file, use_syslog, syslog_address, syslog_port, syslog_protocol,
+        log_file, use_syslog, syslog_address, syslog_port, syslog_protocol
     )
 
     app.run(
@@ -240,14 +254,14 @@ async def load_agent_on_start(
     Used to be scheduled on server start
     (hence the `app` and `loop` arguments).
     """
-    app.agent = await agent.load_agent(
+    app.ctx.agent = await agent.load_agent(
         model_path=model_path,
         remote_storage=remote_storage,
         endpoints=endpoints,
         loop=loop,
     )
     logger.info("Rasa server is up and running.")
-    return app.agent
+    return app.ctx.agent
 
 
 async def close_resources(app: Sanic, _: AbstractEventLoop) -> None:
@@ -257,7 +271,7 @@ async def close_resources(app: Sanic, _: AbstractEventLoop) -> None:
         app: The Sanic application.
         _: The current Sanic worker event loop.
     """
-    current_agent = getattr(app, "agent", None)
+    current_agent = getattr(app.ctx, "agent", None)
     if not current_agent:
         logger.debug("No agent found when shutting down server.")
         return
@@ -265,3 +279,44 @@ async def close_resources(app: Sanic, _: AbstractEventLoop) -> None:
     event_broker = current_agent.tracker_store.event_broker
     if event_broker:
         await event_broker.close()
+
+    action_endpoint = current_agent.action_endpoint
+    if action_endpoint:
+        await action_endpoint.session.close()
+
+    model_server = current_agent.model_server
+    if model_server:
+        await model_server.session.close()
+
+
+async def create_connection_pools(app: Sanic, _: AbstractEventLoop) -> None:
+    """Create connection pools for the agent's action server and model server."""
+    current_agent = getattr(app.ctx, "agent", None)
+    if not current_agent:
+        logger.debug("No agent found after server start.")
+        return None
+
+    create_action_endpoint_connection_pool(current_agent)
+    create_model_server_connection_pool(current_agent)
+
+    return None
+
+
+def create_action_endpoint_connection_pool(agent: Agent) -> Optional["ClientSession"]:
+    """Create a connection pool for the action endpoint."""
+    action_endpoint = agent.action_endpoint
+    if not action_endpoint:
+        logger.debug("No action endpoint found after server start.")
+        return None
+
+    return action_endpoint.session
+
+
+def create_model_server_connection_pool(agent: Agent) -> Optional["ClientSession"]:
+    """Create a connection pool for the model server."""
+    model_server = agent.model_server
+    if not model_server:
+        logger.debug("No model server endpoint found after server start.")
+        return None
+
+    return model_server.session

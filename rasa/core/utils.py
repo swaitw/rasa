@@ -3,15 +3,7 @@ import logging
 import os
 from decimal import Decimal
 from pathlib import Path
-from typing import (
-    Any,
-    Dict,
-    Optional,
-    Set,
-    Text,
-    Tuple,
-    Union,
-)
+from typing import Any, Dict, Optional, Set, Text, Tuple, Union
 
 import numpy as np
 
@@ -22,7 +14,6 @@ from rasa.shared.constants import DEFAULT_ENDPOINTS_PATH, TCP_PROTOCOL
 from rasa.core.lock_store import LockStore, RedisLockStore, InMemoryLockStore
 from rasa.utils.endpoints import EndpointConfig, read_endpoint_config
 from sanic import Sanic
-from sanic.views import CompositionView
 from socket import SOCK_DGRAM, SOCK_STREAM
 import rasa.cli.utils as cli_utils
 
@@ -54,7 +45,7 @@ def configure_file_logging(
         )
         socktype = SOCK_STREAM if syslog_protocol == TCP_PROTOCOL else SOCK_DGRAM
         syslog_handler = logging.handlers.SysLogHandler(
-            address=(syslog_address, syslog_port), socktype=socktype,
+            address=(syslog_address, syslog_port), socktype=socktype
         )
         syslog_handler.setLevel(logger_obj.level)
         syslog_handler.setFormatter(formatter)
@@ -126,15 +117,7 @@ def list_routes(app: Sanic) -> Dict[Text, Text]:
         for arg in route._params:
             options[arg] = f"[{arg}]"
 
-        if not isinstance(route.handler, CompositionView):
-            handlers = [
-                (list(route.methods)[0], route.name.replace("rasa.server.", ""))
-            ]
-        else:
-            handlers = [
-                (method, find_route(v.__name__, endpoint) or v.__name__)
-                for method, v in route.handler.handlers.items()
-            ]
+        handlers = [(next(iter(route.methods)), route.name.replace("rasa_server.", ""))]
 
         for method, name in handlers:
             full_endpoint = "/" + "/".join(endpoint)
@@ -152,8 +135,8 @@ def extract_args(
 ) -> Tuple[Dict[Text, Any], Dict[Text, Any]]:
     """Go through the kwargs and filter out the specified keys.
 
-    Return both, the filtered kwargs as well as the remaining kwargs."""
-
+    Return both, the filtered kwargs as well as the remaining kwargs.
+    """
     remaining = {}
     extracted = {}
     for k, v in kwargs.items():
@@ -189,6 +172,7 @@ class AvailableEndpoints:
 
     @classmethod
     def read_endpoints(cls, endpoint_file: Text) -> "AvailableEndpoints":
+        """Read the different endpoints from a yaml file."""
         nlg = read_endpoint_config(endpoint_file, endpoint_type="nlg")
         nlu = read_endpoint_config(endpoint_file, endpoint_type="nlu")
         action = read_endpoint_config(endpoint_file, endpoint_type="action_endpoint")
@@ -199,7 +183,15 @@ class AvailableEndpoints:
         lock_store = read_endpoint_config(endpoint_file, endpoint_type="lock_store")
         event_broker = read_endpoint_config(endpoint_file, endpoint_type="event_broker")
 
-        return cls(nlg, nlu, action, model, tracker_store, lock_store, event_broker)
+        return cls(
+            nlg,
+            nlu,
+            action,
+            model,
+            tracker_store,
+            lock_store,
+            event_broker,
+        )
 
     def __init__(
         self,
@@ -211,6 +203,7 @@ class AvailableEndpoints:
         lock_store: Optional[EndpointConfig] = None,
         event_broker: Optional[EndpointConfig] = None,
     ) -> None:
+        """Create an `AvailableEndpoints` object."""
         self.model = model
         self.action = action
         self.nlu = nlu
@@ -221,7 +214,7 @@ class AvailableEndpoints:
 
 
 def read_endpoints_from_path(
-    endpoints_path: Union[Path, Text, None] = None
+    endpoints_path: Optional[Union[Path, Text]] = None
 ) -> AvailableEndpoints:
     """Get `AvailableEndpoints` object from specified path.
 

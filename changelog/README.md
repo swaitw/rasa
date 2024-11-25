@@ -16,16 +16,16 @@ Each file should be named like `<ISSUE>.<TYPE>.md`, where
 
 * `feature`: new user facing features, like new command-line options and new behavior.
 * `improvement`: improvement of existing functionality, usually without requiring user intervention.
-* `bugfix`: fixes a reported bug.
+* `bugfix`: fixes a reported bug or security vulnerability.
 * `doc`: documentation improvement, like rewording an entire section or adding missing docs.
 * `removal`: feature deprecation or feature removal.
 * `misc`: fixing a small typo or internal change, will not be included in the changelog.
 
 So for example: `123.feature.md`, `456.bugfix.md`.
 
-If your PR fixes an issue, use that number here. If there is no issue,
-then after you submit the PR and get the PR number you can add a
-changelog using that instead.
+If your change fixes an issue, use the issue number here. If there is no issue,
+then after you submit the PR with your changes and get the PR number, you can add a
+changelog using that PR number instead.
 
 If you are not sure what issue type to use, don't hesitate to ask in your PR.
 

@@ -1,6 +1,8 @@
 import abc
+import copy
 import json
 import logging
+import structlog
 import re
 from abc import ABC
 
@@ -20,6 +22,7 @@ from typing import (
     Iterable,
     cast,
     Tuple,
+    TypeVar,
 )
 
 import rasa.shared.utils.common
@@ -68,7 +71,7 @@ if TYPE_CHECKING:
     EntityPrediction = TypedDict(
         "EntityPrediction",
         {
-            ENTITY_ATTRIBUTE_TEXT: Text,
+            ENTITY_ATTRIBUTE_TEXT: Text,  # type: ignore[misc]
             ENTITY_ATTRIBUTE_START: Optional[float],
             ENTITY_ATTRIBUTE_END: Optional[float],
             ENTITY_ATTRIBUTE_VALUE: Text,
@@ -82,11 +85,12 @@ if TYPE_CHECKING:
     )
 
     IntentPrediction = TypedDict(
-        "IntentPrediction", {INTENT_NAME_KEY: Text, PREDICTED_CONFIDENCE_KEY: float,},
+        "IntentPrediction", {INTENT_NAME_KEY: Text, PREDICTED_CONFIDENCE_KEY: float}  # type: ignore[misc]  # noqa: E501
     )
     NLUPredictionData = TypedDict(
         "NLUPredictionData",
         {
+            TEXT: Text,  # type: ignore[misc]
             INTENT: IntentPrediction,
             INTENT_RANKING_KEY: List[IntentPrediction],
             ENTITIES: List[EntityPrediction],
@@ -96,6 +100,7 @@ if TYPE_CHECKING:
         total=False,
     )
 logger = logging.getLogger(__name__)
+structlogger = structlog.get_logger()
 
 
 def deserialise_events(serialized_events: List[Dict[Text, Any]]) -> List["Event"]:
@@ -104,7 +109,6 @@ def deserialise_events(serialized_events: List[Dict[Text, Any]]) -> List["Event"
     Example format:
         [{"event": "slot", "value": 5, "name": "my_slot"}]
     """
-
     deserialised = []
 
     for e in serialized_events:
@@ -113,9 +117,8 @@ def deserialise_events(serialized_events: List[Dict[Text, Any]]) -> List["Event"
             if event:
                 deserialised.append(event)
             else:
-                logger.warning(
-                    f"Unable to parse event '{event}' while deserialising. The event"
-                    " will be ignored."
+                structlogger.warning(
+                    "event.deserialization.failed", rasa_event=copy.deepcopy(event)
                 )
 
     return deserialised
@@ -140,7 +143,7 @@ def format_message(
 
     Return:
         Message with entities annotated inline, e.g.
-        `I am from [Berlin]{"entity": "city"}`.
+        `I am from [Berlin]{`"`entity`"`: `"`city`"`}`.
     """
     from rasa.shared.nlu.training_data.formats.readerwriter import TrainingDataWriter
     from rasa.shared.nlu.training_data import entities_parser
@@ -182,7 +185,7 @@ def split_events(
         The split events.
     """
     sub_events = []
-    current = []
+    current: List["Event"] = []
 
     def event_fulfills_splitting_condition(evt: "Event") -> bool:
         # event does not have the correct type
@@ -226,12 +229,41 @@ def do_events_begin_with_session_start(events: List["Event"]) -> bool:
         events: The events to inspect.
 
     Returns:
-        Whether or not `events` begins with a session start sequence.
+        Whether `events` begins with a session start sequence.
     """
-    return len(events) > 1 and events[:2] == [
-        ActionExecuted(ACTION_SESSION_START_NAME),
-        SessionStarted(),
-    ]
+    if len(events) < 2:
+        return False
+
+    first = events[0]
+    second = events[1]
+
+    # We are not interested in specific metadata or timestamps. Action name and event
+    # type are sufficient for this check
+    return (
+        isinstance(first, ActionExecuted)
+        and first.action_name == ACTION_SESSION_START_NAME
+        and isinstance(second, SessionStarted)
+    )
+
+
+def remove_parse_data(event: Dict[Text, Any]) -> Dict[Text, Any]:
+    """Reduce event details to the minimum necessary to be structlogged.
+
+    Deletes the parse_data key from the event if it exists.
+
+    Args:
+        event: The event to be reduced.
+
+    Returns:
+        A reduced copy of the event.
+    """
+    reduced_event = copy.deepcopy(event)
+    if "parse_data" in reduced_event:
+        del reduced_event["parse_data"]
+    return reduced_event
+
+
+E = TypeVar("E", bound="Event")
 
 
 class Event(ABC):
@@ -296,7 +328,9 @@ class Event(ABC):
         return event_class._from_parameters(parameters)
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List["Event"]]:
+    def _from_story_string(
+        cls: Type[E], parameters: Dict[Text, Any]
+    ) -> Optional[List[E]]:
         """Called to convert a parsed story line into an event."""
         return [cls(parameters.get("timestamp"), parameters.get("metadata"))]
 
@@ -342,7 +376,6 @@ class Event(ABC):
         type_name: Text, default: Optional[Type["Event"]] = None
     ) -> Optional[Type["Event"]]:
         """Returns a slots class by its type name."""
-
         for cls in rasa.shared.utils.common.all_subclasses(Event):
             if cls.type_name == type_name:
                 return cls
@@ -450,7 +483,7 @@ class UserUttered(Event):
             self.use_text_for_featurization = False
 
         self.parse_data: "NLUPredictionData" = {
-            INTENT: self.intent,
+            INTENT: self.intent,  # type: ignore[misc]
             # Copy entities so that changes to `self.entities` don't affect
             # `self.parse_data` and hence don't get persisted
             ENTITIES: self.entities.copy(),
@@ -495,6 +528,8 @@ class UserUttered(Event):
         """Returns full retrieval intent name or `None` if no retrieval intent."""
         return self.intent.get(FULL_RETRIEVAL_INTENT_NAME_KEY)
 
+    # Note that this means two UserUttered events with the same text, intent
+    # and entities but _different_ timestamps will be considered equal.
     def __eq__(self, other: Any) -> bool:
         """Compares object with other object."""
         if not isinstance(other, UserUttered):
@@ -516,19 +551,27 @@ class UserUttered(Event):
         """Returns text representation of event."""
         entities = ""
         if self.entities:
-            entities = [
+            entities_list = [
                 f"{entity[ENTITY_ATTRIBUTE_VALUE]} "
                 f"(Type: {entity[ENTITY_ATTRIBUTE_TYPE]}, "
                 f"Role: {entity.get(ENTITY_ATTRIBUTE_ROLE)}, "
                 f"Group: {entity.get(ENTITY_ATTRIBUTE_GROUP)})"
                 for entity in self.entities
             ]
-            entities = f", entities: {', '.join(entities)}"
+            entities = f", entities: {', '.join(entities_list)}"
 
         return (
             f"UserUttered(text: {self.text}, intent: {self.intent_name}"
             f"{entities}"
             f", use_text_for_featurization: {self.use_text_for_featurization})"
+        )
+
+    def __repr__(self) -> Text:
+        """Returns text representation of event for debugging."""
+        return (
+            f"UserUttered('{self.text}', "
+            f"'{self.intent_name}', "
+            f"{json.dumps(self.entities)})"
         )
 
     @staticmethod
@@ -551,7 +594,7 @@ class UserUttered(Event):
         )
         return _dict
 
-    def as_sub_state(self,) -> Dict[Text, Union[None, Text, List[Optional[Text]]]]:
+    def as_sub_state(self) -> Dict[Text, Union[None, Text, List[Optional[Text]]]]:
         """Turns a UserUttered event into features.
 
         The substate contains information about entities, intent and text of the
@@ -594,7 +637,9 @@ class UserUttered(Event):
         return out
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["UserUttered"]]:
         try:
             return [
                 cls._from_parse_data(
@@ -724,6 +769,9 @@ class DefinePrevUserUtteredFeaturization(SkipEventInMDStoryMixin):
             # a user message is always followed by action listen
             return
 
+        if not tracker.latest_message:
+            return
+
         # update previous user message's featurization based on this event
         tracker.latest_message.use_text_for_featurization = (
             self.use_text_for_featurization
@@ -802,6 +850,9 @@ class EntitiesAdded(SkipEventInMDStoryMixin):
         if tracker.latest_action_name != ACTION_LISTEN_NAME:
             # entities belong only to the last user message
             # a user message always comes after action listen
+            return
+
+        if not tracker.latest_message:
             return
 
         for entity in self.entities:
@@ -945,7 +996,7 @@ class SlotSet(Event):
         self.value = value
         super().__init__(timestamp, metadata)
 
-    def __str__(self) -> Text:
+    def __repr__(self) -> Text:
         """Returns text representation of event."""
         return f"SlotSet(key: {self.key}, value: {self.value})"
 
@@ -1168,7 +1219,9 @@ class ReminderScheduled(Event):
         return d
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["ReminderScheduled"]]:
 
         trigger_date_time = parser.parse(parameters.get("date_time"))
 
@@ -1282,7 +1335,9 @@ class ReminderCancelled(Event):
         return f"{self.type_name}{props}"
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["ReminderCancelled"]]:
         return [
             ReminderCancelled(
                 parameters.get("name"),
@@ -1346,7 +1401,9 @@ class StoryExported(Event):
         return hash(32143124319)
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["StoryExported"]]:
         return [
             StoryExported(
                 parameters.get("path"),
@@ -1414,7 +1471,9 @@ class FollowupAction(Event):
         return f"{self.type_name}{props}"
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["FollowupAction"]]:
 
         return [
             FollowupAction(
@@ -1519,15 +1578,18 @@ class ActionExecuted(Event):
         self.action_text = action_text
         self.hide_rule_turn = hide_rule_turn
 
+        if self.action_name is None and self.action_text is None:
+            raise ValueError(
+                "Both the name of the action and the end-to-end "
+                "predicted text are missing. "
+                "The `ActionExecuted` event cannot be initialised."
+            )
+
         super().__init__(timestamp, metadata)
 
     def __members__(self) -> Tuple[Optional[Text], Optional[Text], Text]:
         meta_no_nones = {k: v for k, v in self.metadata.items() if v is not None}
-        return (
-            self.action_name,
-            self.action_text,
-            jsonpickle.encode(meta_no_nones),
-        )
+        return (self.action_name, self.action_text, jsonpickle.encode(meta_no_nones))
 
     def __repr__(self) -> Text:
         """Returns event as string for debugging."""
@@ -1535,9 +1597,9 @@ class ActionExecuted(Event):
             self.action_name, self.policy, self.confidence
         )
 
-    def __str__(self) -> Optional[Text]:
+    def __str__(self) -> Text:
         """Returns event as human readable string."""
-        return self.action_name or self.action_text
+        return str(self.action_name) or str(self.action_text)
 
     def __hash__(self) -> int:
         """Returns unique hash for event."""
@@ -1562,7 +1624,9 @@ class ActionExecuted(Event):
         return self.action_name
 
     @classmethod
-    def _from_story_string(cls, parameters: Dict[Text, Any]) -> Optional[List[Event]]:
+    def _from_story_string(
+        cls, parameters: Dict[Text, Any]
+    ) -> Optional[List["ActionExecuted"]]:
         return [
             ActionExecuted(
                 parameters.get("name"),
@@ -1695,6 +1759,10 @@ class ActiveLoop(Event):
     def __str__(self) -> Text:
         """Returns text representation of event."""
         return f"Loop({self.name})"
+
+    def __repr__(self) -> Text:
+        """Returns event as string for debugging."""
+        return f"ActiveLoop({self.name}, {self.timestamp}, {self.metadata})"
 
     def __hash__(self) -> int:
         """Returns unique hash for event."""

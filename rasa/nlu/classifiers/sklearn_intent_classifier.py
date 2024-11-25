@@ -15,10 +15,12 @@ from rasa.engine.storage.resource import Resource
 from rasa.engine.storage.storage import ModelStorage
 from rasa.shared.constants import DOCS_URL_TRAINING_DATA_NLU
 from rasa.nlu.classifiers import LABEL_RANKING_LENGTH
+from rasa.shared.exceptions import RasaException
 from rasa.shared.nlu.constants import TEXT
 from rasa.nlu.classifiers.classifier import IntentClassifier
 from rasa.shared.nlu.training_data.training_data import TrainingData
 from rasa.shared.nlu.training_data.message import Message
+from rasa.utils.tensorflow.constants import FEATURIZERS
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
         config: Dict[Text, Any],
         model_storage: ModelStorage,
         resource: Resource,
-        clf: "sklearn.model_selection.GridSearchCV" = None,
+        clf: Optional["sklearn.model_selection.GridSearchCV"] = None,
         le: Optional["sklearn.preprocessing.LabelEncoder"] = None,
     ) -> None:
         """Construct a new intent classifier using the sklearn framework."""
@@ -89,8 +91,8 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
         """Creates a new untrained component (see parent class for full docstring)."""
         return cls(config, model_storage, resource)
 
-    @classmethod
-    def required_packages(cls) -> List[Text]:
+    @staticmethod
+    def required_packages() -> List[Text]:
         """Any extra python dependencies required for this component to run."""
         return ["sklearn"]
 
@@ -104,8 +106,8 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
     def transform_labels_num2str(self, y: np.ndarray) -> np.ndarray:
         """Transforms a list of strings into numeric label representation.
 
-        :param y: List of labels to convert to numeric representation"""
-
+        :param y: List of labels to convert to numeric representation
+        """
         return self.le.inverse_transform(y)
 
     def train(self, training_data: TrainingData) -> Resource:
@@ -124,11 +126,15 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
             return self._resource
 
         y = self.transform_labels_str2num(labels)
+        training_examples = [
+            message
+            for message in training_data.intent_examples
+            if message.features_present(
+                attribute=TEXT, featurizers=self.component_config.get(FEATURIZERS)
+            )
+        ]
         X = np.stack(
-            [
-                self._get_sentence_features(example)
-                for example in training_data.intent_examples
-            ]
+            [self._get_sentence_features(example) for example in training_examples]
         )
         # reduce dimensionality
         X = np.reshape(X, (len(X), -1))
@@ -190,9 +196,12 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
     def process(self, messages: List[Message]) -> List[Message]:
         """Return the most likely intent and its probability for a message."""
         for message in messages:
-            if not self.clf:
+            if self.clf is None or not message.features_present(
+                attribute=TEXT, featurizers=self.component_config.get(FEATURIZERS)
+            ):
                 # component is either not trained or didn't
-                # receive enough training data
+                # receive enough training data or the input doesn't
+                # have required features.
                 intent = None
                 intent_ranking = []
             else:
@@ -232,6 +241,11 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
         :param X: bow of input text
         :return: vector of probabilities containing one entry for each label.
         """
+        if self.clf is None:
+            raise RasaException(
+                "Sklearn intent classifier has not been initialised and trained."
+            )
+
         return self.clf.predict_proba(X)
 
     def predict(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -246,6 +260,7 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
         pred_result = self.predict_prob(X)
         # sort the probabilities retrieving the indices of
         # the elements in sorted order
+
         sorted_indices = np.fliplr(np.argsort(pred_result, axis=1))
         return sorted_indices, pred_result[:, sorted_indices]
 
@@ -285,7 +300,7 @@ class SklearnIntentClassifier(GraphComponent, IntentClassifier):
                     encoder = LabelEncoder()
                     encoder.classes_ = classes
 
-                    return cls(config, model_storage, resource, classifier, encoder,)
+                    return cls(config, model_storage, resource, classifier, encoder)
         except ValueError:
             logger.debug(
                 f"Failed to load '{cls.__name__}' from model storage. Resource "

@@ -3,6 +3,7 @@ import numpy as np
 import logging
 
 from typing import Any, Text, List, Dict, Tuple, Type
+import tensorflow as tf
 
 from rasa.engine.graph import ExecutionContext, GraphComponent
 from rasa.engine.recipes.default_recipe import DefaultV1Recipe
@@ -20,11 +21,9 @@ from rasa.nlu.constants import (
     NUMBER_OF_SUB_TOKENS,
     TOKENS_NAMES,
 )
-from rasa.shared.nlu.constants import (
-    TEXT,
-    ACTION_TEXT,
-)
+from rasa.shared.nlu.constants import TEXT, ACTION_TEXT
 from rasa.utils import train_utils
+from rasa.utils.tensorflow.model_data import ragged_array_to_ndarray
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,7 @@ MAX_SEQUENCE_LENGTHS = {
     "xlnet": NO_LENGTH_RESTRICTION,
     "distilbert": 512,
     "roberta": 512,
+    "camembert": 512,
 }
 
 
@@ -57,7 +57,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
         return [Tokenizer]
 
     def __init__(
-        self, config: Dict[Text, Any], execution_context: ExecutionContext,
+        self, config: Dict[Text, Any], execution_context: ExecutionContext
     ) -> None:
         """Initializes the featurizer with the model in the config."""
         super(LanguageModelFeaturizer, self).__init__(
@@ -120,7 +120,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
         if self.model_name not in model_class_dict:
             raise KeyError(
                 f"'{self.model_name}' not a valid model name. Choose from "
-                f"{str(list(model_class_dict.keys()))} or create"
+                f"{list(model_class_dict.keys())!s} or create"
                 f"a new class inheriting from this class to support your model."
             )
 
@@ -248,7 +248,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
 
         return (
             np.array(sentence_embeddings),
-            np.array(post_processed_sequence_embeddings),
+            ragged_array_to_ndarray(post_processed_sequence_embeddings),
         )
 
     def _tokenize_example(
@@ -360,8 +360,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
             )
             attention_mask.append(padded_sequence)
 
-        attention_mask = np.array(attention_mask).astype(np.float32)
-        return attention_mask
+        return np.array(attention_mask).astype(np.float32)
 
     def _extract_sequence_lengths(
         self, batch_token_ids: List[List[int]]
@@ -450,7 +449,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
             unmasked_embedding = embedding[: actual_sequence_lengths[index]]
             nonpadded_sequence_embeddings.append(unmasked_embedding)
 
-        return np.array(nonpadded_sequence_embeddings)
+        return ragged_array_to_ndarray(nonpadded_sequence_embeddings)
 
     def _compute_batch_sequence_features(
         self, batch_attention_mask: np.ndarray, padded_token_ids: List[List[int]]
@@ -467,7 +466,8 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
             Sequence level representations from the language model.
         """
         model_outputs = self.model(
-            np.array(padded_token_ids), attention_mask=np.array(batch_attention_mask)
+            tf.convert_to_tensor(padded_token_ids),
+            attention_mask=tf.convert_to_tensor(batch_attention_mask),
         )
 
         # sequence hidden states is always the first output from all models
@@ -528,6 +528,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
 
         This is only done if the input was truncated during the batch
         preparation of input for the model.
+
         Args:
             sequence_embeddings: Embeddings returned from the model
             actual_sequence_lengths: original sequence length of all inputs
@@ -558,8 +559,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
                     ]
                 )
             reshaped_sequence_embeddings.append(embedding)
-
-        return np.array(reshaped_sequence_embeddings)
+        return ragged_array_to_ndarray(reshaped_sequence_embeddings)
 
     def _get_model_features_for_batch(
         self,
@@ -655,9 +655,8 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
         sequence_final_embeddings = []
         for embeddings, tokens in zip(sequence_embeddings, batch_tokens):
             sequence_final_embeddings.append(embeddings[: len(tokens)])
-        sequence_final_embeddings = np.array(sequence_final_embeddings)
 
-        return sentence_embeddings, sequence_final_embeddings
+        return sentence_embeddings, ragged_array_to_ndarray(sequence_final_embeddings)
 
     def _get_docs_for_batch(
         self,
@@ -701,7 +700,7 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
 
         return batch_docs
 
-    def process_training_data(self, training_data: TrainingData,) -> TrainingData:
+    def process_training_data(self, training_data: TrainingData) -> TrainingData:
         """Computes tokens and dense features for each message in training data.
 
         Args:

@@ -28,7 +28,7 @@ def create_featurizer(
     resource: Resource,
 ) -> Callable[..., RegexFeaturizer]:
     def inner(
-        config: Dict[Text, Any] = None,
+        config: Optional[Dict[Text, Any]] = None,
         known_patterns: Optional[List[Dict[Text, Any]]] = None,
     ) -> RegexFeaturizer:
         config = config or {}
@@ -73,13 +73,13 @@ def create_featurizer(
         ),
         (
             "blah balh random eh",
-            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             [0.0, 0.0, 0.0],
             [],
         ),
         (
             "a 1 digit number",
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             [1.0, 0.0, 1.0],
             [1, 1],
         ),
@@ -129,7 +129,14 @@ def test_regex_featurizer(
     [
         (
             "明天上海的天气怎么样？",
-            [("明天", 0), ("上海", 2), ("的", 4), ("天气", 5), ("怎么样", 7), ("？", 10)],
+            [
+                ("明天", 0),
+                ("上海", 2),
+                ("的", 4),
+                ("天气", 5),
+                ("怎么样", 7),
+                ("？", 10),
+            ],
             [[0.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             [1.0, 1.0],
             [0.0, 1.0],
@@ -143,7 +150,15 @@ def test_regex_featurizer(
         ),
         (
             "昨天和今天的天气都不错",
-            [("昨天", 0), ("和", 2), ("今天", 3), ("的", 5), ("天气", 6), ("都", 8), ("不错", 9)],
+            [
+                ("昨天", 0),
+                ("和", 2),
+                ("今天", 3),
+                ("的", 5),
+                ("天气", 6),
+                ("都", 8),
+                ("不错", 9),
+            ],
             [
                 [0.0, 1.0],
                 [0.0, 0.0],
@@ -176,8 +191,8 @@ def test_lookup_tables_without_use_word_boundaries(
     from rasa.nlu.tokenizers.tokenizer import Token
 
     lookups = [
-        {"name": "cites", "elements": ["北京", "上海", "广州", "深圳", "杭州"],},
-        {"name": "dates", "elements": ["昨天", "今天", "明天", "后天"],},
+        {"name": "cites", "elements": ["北京", "上海", "广州", "深圳", "杭州"]},
+        {"name": "dates", "elements": ["昨天", "今天", "明天", "后天"]},
     ]
     ftr = create_featurizer({"use_word_boundaries": False})
     training_data = TrainingData()
@@ -221,7 +236,7 @@ def test_lookup_tables_without_use_word_boundaries(
         ),
         (
             "Is burrito my favorite food?",
-            [[0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],],
+            [[0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             [0.0, 1.0],
             [1.0],
         ),
@@ -393,9 +408,7 @@ def test_regex_featurizer_case_sensitive(
         {"pattern": "\\bhey*", "name": "hello", "usage": "intent"},
         {"pattern": "[0-1]+", "name": "binary", "usage": "intent"},
     ]
-    ftr = create_featurizer(
-        {"case_sensitive": case_sensitive}, known_patterns=patterns,
-    )
+    ftr = create_featurizer({"case_sensitive": case_sensitive}, known_patterns=patterns)
 
     # adds tokens to the message
     message = Message(data={TEXT: sentence})

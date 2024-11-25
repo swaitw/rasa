@@ -7,18 +7,18 @@ from rasa.core.agent import Agent
 from rasa.core.policies.policy import Policy
 from rasa.engine.storage.local_model_storage import LocalModelStorage
 from rasa.shared.nlu.training_data.formats import RasaYAMLReader
-from rasa.utils.tensorflow.constants import EPOCHS
+from rasa.utils.tensorflow.constants import EPOCHS, RUN_EAGERLY
 from typing import Any, Dict, List, Tuple, Text, Union, Optional
 import rasa.model_training
 import rasa.shared.utils.io
 import rasa.engine.recipes.default_components
 
 COMPONENTS_TEST_PARAMS = {
-    "DIETClassifier": {EPOCHS: 1},
-    "ResponseSelector": {EPOCHS: 1},
+    "DIETClassifier": {EPOCHS: 1, RUN_EAGERLY: True},
+    "ResponseSelector": {EPOCHS: 1, RUN_EAGERLY: True},
     "LanguageModelFeaturizer": {
         "model_name": "bert",
-        "model_weights": "bert-base-uncased",
+        "model_weights": "sentence-transformers/all-MiniLM-L6-v2",
     },
 }
 
@@ -76,7 +76,17 @@ def pipelines_for_tests() -> List[Tuple[Text, List[Dict[Text, Any]]]]:
         (
             "en",
             as_pipeline(
-                "WhitespaceTokenizer", "LanguageModelFeaturizer", "DIETClassifier",
+                {"name": "SpacyNLP", "model": "en_core_web_md"},
+                "SpacyTokenizer",
+                "SpacyFeaturizer",
+                "CountVectorsFeaturizer",
+                "LogisticRegressionClassifier",
+            ),
+        ),
+        (
+            "en",
+            as_pipeline(
+                "WhitespaceTokenizer", "LanguageModelFeaturizer", "DIETClassifier"
             ),
         ),
         ("fallback", as_pipeline("KeywordIntentClassifier", "FallbackClassifier")),
@@ -148,6 +158,7 @@ def test_all_components_are_in_at_least_one_test_pipeline():
 
 @pytest.mark.timeout(600, func_only=True)
 @pytest.mark.parametrize("language, pipeline", pipelines_for_tests())
+@pytest.mark.skip_on_windows
 async def test_train_persist_load_parse(
     language: Optional[Text],
     pipeline: List[Dict],
@@ -156,11 +167,16 @@ async def test_train_persist_load_parse(
 ):
     config_file = tmp_path / "config.yml"
     rasa.shared.utils.io.dump_obj_as_json_to_file(
-        config_file, {"pipeline": pipeline, "language": language}
+        config_file,
+        {
+            "pipeline": pipeline,
+            "language": language,
+            "assistant_id": "placeholder_default",
+        },
     )
 
     persisted_path = rasa.model_training.train_nlu(
-        str(config_file), nlu_as_json_path, output=str(tmp_path),
+        str(config_file), nlu_as_json_path, output=str(tmp_path)
     )
 
     assert Path(persisted_path).is_file()
@@ -182,11 +198,13 @@ def test_train_persist_load_parse_non_windows(
 
 def test_train_model_empty_pipeline(nlu_as_json_path: Text, tmp_path: Path):
     config_file = tmp_path / "config.yml"
-    rasa.shared.utils.io.dump_obj_as_json_to_file(config_file, {"pipeline": [],})
+    rasa.shared.utils.io.dump_obj_as_json_to_file(
+        config_file, {"pipeline": [], "assistant_id": "placeholder_default"}
+    )
 
     with pytest.raises(ValueError):
         rasa.model_training.train_nlu(
-            str(config_file), nlu_as_json_path, output=str(tmp_path),
+            str(config_file), nlu_as_json_path, output=str(tmp_path)
         )
 
 
@@ -203,10 +221,10 @@ def test_handles_pipeline_with_non_existing_component(
     )
 
     with pytest.raises(
-        Exception, match="Can't load class for name 'my_made_up_component'",
+        Exception, match="Can't load class for name 'my_made_up_component'"
     ):
         rasa.model_training.train_nlu(
-            str(config_file), nlu_as_json_path, output=str(tmp_path),
+            str(config_file), nlu_as_json_path, output=str(tmp_path)
         )
 
 
@@ -216,7 +234,11 @@ def test_train_model_training_data_persisted(
     config_file = tmp_path / "config.yml"
     rasa.shared.utils.io.dump_obj_as_json_to_file(
         config_file,
-        {"pipeline": [{"name": "KeywordIntentClassifier"}], "language": "en"},
+        {
+            "pipeline": [{"name": "KeywordIntentClassifier"}],
+            "language": "en",
+            "assistant_id": "placeholder_default",
+        },
     )
 
     persisted_path = rasa.model_training.train_nlu(
@@ -244,7 +266,11 @@ def test_train_model_no_training_data_persisted(
     config_file = tmp_path / "config.yml"
     rasa.shared.utils.io.dump_obj_as_json_to_file(
         config_file,
-        {"pipeline": [{"name": "KeywordIntentClassifier"}], "language": "en"},
+        {
+            "pipeline": [{"name": "KeywordIntentClassifier"}],
+            "language": "en",
+            "assistant_id": "placeholder_default",
+        },
     )
 
     persisted_path = rasa.model_training.train_nlu(

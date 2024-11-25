@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Text, Union, List, Tuple
+
 from rasa.utils.io import WriteRow
 from pathlib import Path
 import csv
@@ -12,7 +13,7 @@ from rasa.core.evaluation.marker_base import EventMetaData
 
 def compute_statistics(
     values: List[Union[float, int]]
-) -> Dict[Text, Union[int, np.float]]:
+) -> Dict[Text, Union[int, float, np.floating]]:
     """Computes some statistics over the given numbers."""
     return {
         "count": len(values) if values else 0,
@@ -72,7 +73,7 @@ class MarkerStatistics:
     def __init__(self) -> None:
         """Creates a new marker statistics object."""
         # to ensure consistency of processed rows
-        self._marker_names = []
+        self._marker_names: List[Text] = []
 
         # (1) For collecting the per-session analysis:
         # NOTE: we could stream / compute them later instead of collecting them...
@@ -188,13 +189,7 @@ class MarkerStatistics:
 
     @staticmethod
     def _header() -> List[Text]:
-        return [
-            "sender_id",
-            "session_idx",
-            "marker",
-            "statistic",
-            "value",
-        ]
+        return ["sender_id", "session_idx", "marker", "statistic", "value"]
 
     def _write_overview(self, table_writer: WriteRow) -> None:
         special_sender_idx = self.ALL_SENDERS
@@ -256,7 +251,7 @@ class MarkerStatistics:
         marker_name: Text,
         statistic_name: Text,
         session_identifiers: List[Tuple[Text, int]],
-        values: List[Union[np.float, int]],
+        values: List[Union[float, int]],
     ) -> None:
         for record_idx, (sender_id, session_idx) in enumerate(session_identifiers):
             MarkerStatistics._write_row(
@@ -274,10 +269,10 @@ class MarkerStatistics:
     def _write_row(
         table_writer: WriteRow,
         sender_id: Text,
-        session_idx: Union[int, np.float],
+        session_idx: Union[int, float],
         marker_name: Text,
         statistic_name: Text,
-        statistic_value: Union[int, np.float],
+        statistic_value: Union[int, float],
     ) -> None:
         if isinstance(statistic_value, int):
             value_str = str(statistic_value)

@@ -25,7 +25,7 @@ from rasa.engine.storage.resource import Resource
 from rasa.engine.storage.storage import ModelStorage
 from rasa.engine.training.graph_trainer import GraphTrainer
 from rasa.shared.core.domain import Domain
-from rasa.shared.importers.autoconfig import TrainingType
+from rasa.shared.data import TrainingType
 from rasa.shared.importers.importer import TrainingDataImporter
 from tests.engine.graph_components_test_classes import (
     AddInputs,
@@ -59,7 +59,7 @@ def test_graph_trainer_returns_model_metadata(
                 uses=PersistableTestComponent,
                 fn="train",
                 constructor_name="create",
-                config={"test_value": test_value,},
+                config={"test_value": test_value},
                 is_target=True,
             ),
             "load": SchemaNode(
@@ -81,7 +81,7 @@ def test_graph_trainer_returns_model_metadata(
                 config={},
                 is_target=True,
                 resource=Resource("train"),
-            ),
+            )
         }
     )
 
@@ -90,6 +90,7 @@ def test_graph_trainer_returns_model_metadata(
         GraphModelConfiguration(
             train_schema=train_schema,
             predict_schema=predict_schema,
+            assistant_id="test_assistant_id",
             language=None,
             core_target=None,
             nlu_target="nlu",
@@ -99,6 +100,7 @@ def test_graph_trainer_returns_model_metadata(
         output_filename=output_filename,
     )
     assert model_metadata.model_id
+    assert model_metadata.assistant_id == "test_assistant_id"
     assert model_metadata.domain.as_dict() == Domain.from_path(domain_path).as_dict()
     assert model_metadata.train_schema == train_schema
     assert model_metadata.predict_schema == predict_schema
@@ -246,21 +248,13 @@ def test_graph_trainer_always_reads_input(
     # The first train should call all the components and cache their outputs.
     mocks = spy_on_all_components(train_schema)
     train_with_schema(train_schema, temp_cache)
-    assert node_call_counts(mocks) == {
-        "read_file": 1,
-        "subtract": 1,
-        "assert_node": 1,
-    }
+    assert node_call_counts(mocks) == {"read_file": 1, "subtract": 1, "assert_node": 1}
 
     # Nothing has changed so this time so no components will run
     # (just input nodes during fingerprint run).
     mocks = spy_on_all_components(train_schema)
     train_with_schema(train_schema, temp_cache)
-    assert node_call_counts(mocks) == {
-        "read_file": 1,
-        "subtract": 0,
-        "assert_node": 0,
-    }
+    assert node_call_counts(mocks) == {"read_file": 1, "subtract": 0, "assert_node": 0}
 
     # When we update the input file, all the nodes will run again and the assert_node
     # will fail.
@@ -302,19 +296,13 @@ def test_graph_trainer_with_non_cacheable_components(
     # The first train should call all the components.
     mocks = spy_on_all_components(train_schema)
     train_with_schema(train_schema, temp_cache)
-    assert node_call_counts(mocks) == {
-        "input": 1,
-        "subtract": 1,
-    }
+    assert node_call_counts(mocks) == {"input": 1, "subtract": 1}
 
     # Nothing has changed but none of the components can cache so all will have to
     # run again.
     mocks = spy_on_all_components(train_schema)
     train_with_schema(train_schema, temp_cache)
-    assert node_call_counts(mocks) == {
-        "input": 1,
-        "subtract": 1,
-    }
+    assert node_call_counts(mocks) == {"input": 1, "subtract": 1}
 
 
 def node_call_counts(mocks: Dict[Text, Mock]) -> Dict[Text, int]:
@@ -345,9 +333,7 @@ def train_with_schema(
             cache = local_cache_creator(path)
 
         graph_trainer = GraphTrainer(
-            model_storage=model_storage,
-            cache=cache,
-            graph_runner_class=DaskGraphRunner,
+            model_storage=model_storage, cache=cache, graph_runner_class=DaskGraphRunner
         )
 
         output_filename = path / "model.tar.gz"
@@ -355,6 +341,7 @@ def train_with_schema(
             GraphModelConfiguration(
                 train_schema=train_schema,
                 predict_schema=GraphSchema({}),
+                assistant_id="test_assistant",
                 language=None,
                 core_target=None,
                 nlu_target="nlu",
@@ -435,7 +422,13 @@ def test_graph_trainer_train_logging(
     with caplog.at_level(logging.INFO, logger="rasa.engine.training.hooks"):
         train_with_schema(train_schema, temp_cache)
 
-    assert caplog.messages == [
+    caplog_info_records = list(
+        filter(lambda x: x[1] == logging.INFO, caplog.record_tuples)
+    )
+
+    caplog_messages = list([record[2] for record in caplog_info_records])
+
+    assert caplog_messages == [
         "Starting to train component 'SubtractByX'.",
         "Finished training component 'SubtractByX'.",
     ]
@@ -487,7 +480,12 @@ def test_graph_trainer_train_logging_with_cached_components(
     with caplog.at_level(logging.INFO, logger="rasa.engine.training.hooks"):
         train_with_schema(train_schema, temp_cache)
 
-        assert set(caplog.messages) == {
+        caplog_info_records = list(
+            filter(lambda x: x[1] == logging.INFO, caplog.record_tuples)
+        )
+        caplog_messages_set = set([record[2] for record in caplog_info_records])
+
+        assert caplog_messages_set == {
             "Starting to train component 'SubtractByX'.",
             "Finished training component 'SubtractByX'.",
             "Restored component 'CacheableComponent' from cache.",
@@ -495,7 +493,7 @@ def test_graph_trainer_train_logging_with_cached_components(
 
 
 def test_resources_fingerprints_are_unique_when_cached(
-    temp_cache: LocalTrainingCache, train_with_schema: Callable,
+    temp_cache: LocalTrainingCache, train_with_schema: Callable
 ):
     train_schema = GraphSchema(
         {
@@ -542,7 +540,7 @@ def test_resources_fingerprints_are_unique_when_cached(
 
 
 def test_resources_fingerprints_remain_after_being_cached(
-    temp_cache: LocalTrainingCache, train_with_schema: Callable,
+    temp_cache: LocalTrainingCache, train_with_schema: Callable
 ):
     train_schema = GraphSchema(
         {
@@ -613,7 +611,7 @@ def test_exception_handling_for_on_before_hook(
     default_execution_context: ExecutionContext,
 ):
     schema_node = SchemaNode(
-        needs={}, uses=ProvideX, fn="provide", constructor_name="create", config={},
+        needs={}, uses=ProvideX, fn="provide", constructor_name="create", config={}
     )
 
     class MyHook(GraphNodeHook):

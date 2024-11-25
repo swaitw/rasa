@@ -1,5 +1,4 @@
 from pathlib import Path
-import copy
 import numpy as np
 from typing import Optional, Text, Dict, Any, Union, List, Tuple, TYPE_CHECKING
 
@@ -43,7 +42,7 @@ if TYPE_CHECKING:
 
 def rank_and_mask(
     confidences: np.ndarray, ranking_length: int = 0, renormalize: bool = False
-) -> Tuple[np.array, np.array]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Computes a ranking of the given confidences.
 
     First, it computes a list containing the indices that would sort all the given
@@ -86,9 +85,9 @@ def rank_and_mask(
 
 
 def update_similarity_type(config: Dict[Text, Any]) -> Dict[Text, Any]:
-    """
-    If SIMILARITY_TYPE is set to 'auto', update the SIMILARITY_TYPE depending
+    """If SIMILARITY_TYPE is set to 'auto', update the SIMILARITY_TYPE depending
     on the LOSS_TYPE.
+
     Args:
         config: model configuration
 
@@ -151,15 +150,13 @@ def align_token_features(
 
 
 def update_evaluation_parameters(config: Dict[Text, Any]) -> Dict[Text, Any]:
-    """
-    If EVAL_NUM_EPOCHS is set to -1, evaluate at the end of the training.
+    """If EVAL_NUM_EPOCHS is set to -1, evaluate at the end of the training.
 
     Args:
         config: model configuration
 
     Returns: updated model configuration
     """
-
     if config[EVAL_NUM_EPOCHS] == -1:
         config[EVAL_NUM_EPOCHS] = config[EPOCHS]
     elif config[EVAL_NUM_EPOCHS] < 1:
@@ -175,23 +172,22 @@ def update_evaluation_parameters(config: Dict[Text, Any]) -> Dict[Text, Any]:
 
 
 def load_tf_hub_model(model_url: Text) -> Any:
-    """Load model from cache if possible, otherwise from TFHub"""
-
-    import tensorflow_hub as tfhub
+    """Load model from cache if possible, otherwise from TFHub."""
+    import os
+    from tensorflow_hub.module_v2 import load as tfhub_load
 
     # needed to load the ConveRT model
     # noinspection PyUnresolvedReferences
     import tensorflow_text  # noqa: F401
-    import os
 
     # required to take care of cases when other files are already
     # stored in the default TFHUB_CACHE_DIR
     try:
-        return tfhub.load(model_url)
+        return tfhub_load(model_url)
     except OSError:
         directory = io_utils.create_temporary_directory()
         os.environ["TFHUB_CACHE_DIR"] = directory
-        return tfhub.load(model_url)
+        return tfhub_load(model_url)
 
 
 def _replace_deprecated_option(
@@ -298,35 +294,6 @@ def entity_label_to_tags(
     return predicted_tags, confidence_values
 
 
-def override_defaults(
-    defaults: Optional[Dict[Text, Any]], custom: Optional[Dict[Text, Any]]
-) -> Dict[Text, Any]:
-    """Override default config with the given config.
-
-    We cannot use `dict.update` method because configs contain nested dicts.
-
-    Args:
-        defaults: default config
-        custom: user config containing new parameters
-
-    Returns:
-        updated config
-    """
-    if defaults:
-        config = copy.deepcopy(defaults)
-    else:
-        config = {}
-
-    if custom:
-        for key in custom.keys():
-            if isinstance(config.get(key), dict):
-                config[key].update(custom[key])
-            else:
-                config[key] = custom[key]
-
-    return config
-
-
 def create_data_generators(
     model_data: RasaModelData,
     batch_sizes: Union[int, List[int]],
@@ -353,7 +320,7 @@ def create_data_generators(
     validation_data_generator = None
     if eval_num_examples > 0:
         model_data, evaluation_model_data = model_data.split(
-            eval_num_examples, random_seed,
+            eval_num_examples, random_seed
         )
         validation_data_generator = RasaBatchDataGenerator(
             evaluation_model_data,
@@ -471,7 +438,8 @@ def _check_evaluation_setting(component_config: Dict[Text, Any]) -> None:
         and component_config[EVAL_NUM_EPOCHS] > component_config[EPOCHS]
     ):
         warning = (
-            f"the value of '{EVAL_NUM_EPOCHS}' is greater than the value of '{EPOCHS}'."
+            f"'{EVAL_NUM_EPOCHS}={component_config[EVAL_NUM_EPOCHS]}' is "
+            f"greater than '{EPOCHS}={component_config[EPOCHS]}'."
             f" No evaluation will occur."
         )
         if component_config[CHECKPOINT_MODEL]:

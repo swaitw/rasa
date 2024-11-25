@@ -9,9 +9,9 @@ from rasa.shared.nlu.training_data.message import Message
 from rasa.nlu.tokenizers.whitespace_tokenizer import WhitespaceTokenizer
 
 
-def create_whitespace_tokenizer(config: Optional[Dict] = None,) -> WhitespaceTokenizer:
+def create_whitespace_tokenizer(config: Optional[Dict] = None) -> WhitespaceTokenizer:
     config = config if config else {}
-    return WhitespaceTokenizer({**WhitespaceTokenizer.get_default_config(), **config},)
+    return WhitespaceTokenizer({**WhitespaceTokenizer.get_default_config(), **config})
 
 
 @pytest.mark.parametrize(
@@ -59,7 +59,7 @@ def create_whitespace_tokenizer(config: Optional[Dict] = None,) -> WhitespaceTok
             ],
         ),
         (
-            "https://www.google.com/search?client=safari&rls=en&q=i+like+rasa&ie=UTF-8&oe=UTF-8 "  # noqa: E501, W505
+            "https://www.google.com/search?client=safari&rls=en&q=i+like+rasa&ie=UTF-8&oe=UTF-8 "  # noqa: E501
             "https://rasa.com/docs/rasa/components#whitespacetokenizer",
             [
                 "https://www.google.com/search?"
@@ -76,6 +76,7 @@ def create_whitespace_tokenizer(config: Optional[Dict] = None,) -> WhitespaceTok
         (":)", [":)"], [(0, 2)]),
         ("Hi :-)", ["Hi"], [(0, 2)]),
         ("👍", ["👍"], [(0, 1)]),
+        ("", [""], [(0, 0)]),
     ],
 )
 def test_whitespace(text, expected_tokens, expected_indices):

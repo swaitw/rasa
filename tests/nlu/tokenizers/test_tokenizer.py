@@ -20,7 +20,7 @@ def create_whitespace_tokenizer(
     config: Optional[Dict[Text, Any]] = None
 ) -> WhitespaceTokenizer:
     return WhitespaceTokenizer(
-        {**WhitespaceTokenizer.get_default_config(), **(config if config else {}),}
+        {**WhitespaceTokenizer.get_default_config(), **(config if config else {})}
     )
 
 
@@ -42,7 +42,7 @@ def test_tokens_comparison():
     [("Forecast for lunch", ["Forecast", "for", "lunch"], [(0, 8), (9, 12), (13, 18)])],
 )
 def test_train_tokenizer(
-    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int]]
+    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int, int]]
 ):
     tk = create_whitespace_tokenizer()
 
@@ -73,7 +73,7 @@ def test_train_tokenizer(
     [("Forecast for lunch", ["Forecast", "for", "lunch"], [(0, 8), (9, 12), (13, 18)])],
 )
 def test_train_tokenizer_e2e_actions(
-    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int]]
+    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int, int]]
 ):
     tk = create_whitespace_tokenizer()
 
@@ -99,7 +99,7 @@ def test_train_tokenizer_e2e_actions(
     [("Forecast for lunch", ["Forecast", "for", "lunch"], [(0, 8), (9, 12), (13, 18)])],
 )
 def test_train_tokenizer_action_name(
-    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int]]
+    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int, int]]
 ):
     tk = create_whitespace_tokenizer()
 
@@ -122,7 +122,7 @@ def test_train_tokenizer_action_name(
     [("Forecast for lunch", ["Forecast", "for", "lunch"], [(0, 8), (9, 12), (13, 18)])],
 )
 def test_process_tokenizer(
-    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int]]
+    text: Text, expected_tokens: List[Text], expected_indices: List[Tuple[int, int]]
 ):
     tk = create_whitespace_tokenizer()
 
@@ -293,3 +293,49 @@ def test_token_fingerprints_are_unique():
     ]
     fingerprints = {t.fingerprint() for t in tokens}
     assert len(fingerprints) == len(tokens)
+
+
+@pytest.mark.parametrize(
+    "text, attribute, expected_tokens",
+    [
+        ("Forecast_for_LUNCH", INTENT, ["Forecast_for_LUNCH"]),
+        ("Forecast for LUNCH", INTENT, ["Forecast for LUNCH"]),
+        ("Forecast+for+LUNCH", INTENT, ["Forecast", "for", "LUNCH"]),
+        ("PREFIX!Forecast+for+LUNCH", INTENT, ["PREFIX", "Forecast", "for", "LUNCH"]),
+        ("prefix!Forecast_for_LUNCH", INTENT, ["prefix", "Forecast_for_LUNCH"]),
+        (
+            "prefix!faq/ask_language",
+            INTENT_RESPONSE_KEY,
+            ["prefix", "faq", "ask_language"],
+        ),
+        (
+            "prefix!faq/ask+language",
+            INTENT_RESPONSE_KEY,
+            ["prefix", "faq", "ask", "language"],
+        ),
+        ("prefix_forecast_for_LUNCH", INTENT, ["prefix_forecast_for_LUNCH"]),
+        (
+            "main+other!Forecast+for+LUNCH",
+            INTENT,
+            ["main", "other", "Forecast", "for", "LUNCH"],
+        ),
+        (
+            "main+other!faq/ask+language",
+            INTENT_RESPONSE_KEY,
+            ["main", "other", "faq", "ask", "language"],
+        ),
+    ],
+)
+def test_split_intent_with_prefix(text: Text, attribute, expected_tokens: List[Text]):
+    component_config = {
+        "intent_tokenization_flag": True,
+        "intent_split_symbol": "+",
+        "prefix_separator_symbol": "!",
+    }
+
+    tk = create_whitespace_tokenizer(component_config)
+
+    message = Message.build(text=text)
+    message.set(attribute, text)
+
+    assert [t.text for t in tk._split_name(message, attribute)] == expected_tokens

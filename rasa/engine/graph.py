@@ -4,18 +4,20 @@ import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import logging
-from typing import Any, Callable, Dict, List, Optional, Text, Type, Tuple
+from typing import Any, Callable, Dict, List, Optional, Text, Type, Tuple, Union
 
 from rasa.engine.exceptions import (
     GraphComponentException,
+    GraphRunError,
     GraphSchemaException,
 )
 import rasa.shared.utils.common
+import rasa.utils.common
 from rasa.engine.storage.resource import Resource
 
 from rasa.engine.storage.storage import ModelStorage
-from rasa.shared.exceptions import InvalidConfigException
-from rasa.shared.importers.autoconfig import TrainingType
+from rasa.shared.exceptions import InvalidConfigException, RasaException
+from rasa.shared.data import TrainingType
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ class GraphSchema:
         Returns:
             The graph schema in a format which can be dumped as JSON or other formats.
         """
-        serializable_graph_schema = {"nodes": {}}
+        serializable_graph_schema: Dict[Text, Dict[Text, Any]] = {"nodes": {}}
         for node_name, node in self.nodes.items():
             serializable = dataclasses.asdict(node)
 
@@ -252,6 +254,15 @@ class GraphComponent(ABC):
         """Any extra python dependencies required for this component to run."""
         return []
 
+    @classmethod
+    def fingerprint_addon(cls, config: Dict[str, Any]) -> Optional[str]:
+        """Adds additional data to the fingerprint calculation.
+
+        This is useful if a component uses external data that is not provided
+        by the graph.
+        """
+        return None
+
 
 class GraphNodeHook(ABC):
     """Holds functionality to be run before and after a `GraphNode`."""
@@ -359,10 +370,9 @@ class GraphNode:
         self._constructor_fn: Callable = getattr(
             self._component_class, self._constructor_name
         )
-        self._component_config: Dict[Text, Any] = {
-            **self._component_class.get_default_config(),
-            **component_config,
-        }
+        self._component_config: Dict[Text, Any] = rasa.utils.common.override_defaults(
+            self._component_class.get_default_config(), component_config
+        )
         self._fn_name: Text = fn_name
         self._fn: Callable = getattr(self._component_class, self._fn_name)
         self._inputs: Dict[Text, Text] = inputs
@@ -402,9 +412,15 @@ class GraphNode:
             # handling of exceptions.
             raise
         except Exception as e:
-            raise GraphComponentException(
-                f"Error initializing graph component for node '{self._node_name}'."
-            ) from e
+            if not isinstance(e, RasaException):
+                raise GraphComponentException(
+                    f"Error initializing graph component for node {self._node_name}."
+                ) from e
+            else:
+                logger.error(
+                    f"Error initializing graph component for node {self._node_name}."
+                )
+                raise
 
     def _get_resource(self, kwargs: Dict[Text, Any]) -> Resource:
         if "resource" in kwargs:
@@ -422,22 +438,41 @@ class GraphNode:
         return Resource(self._node_name)
 
     def __call__(
-        self, *inputs_from_previous_nodes: Tuple[Text, Any]
+        self, *inputs_from_previous_nodes: Union[Tuple[Text, Any], Text]
     ) -> Tuple[Text, Any]:
         """Calls the `GraphComponent` run method when the node executes in the graph.
 
         Args:
             *inputs_from_previous_nodes: The output of all parent nodes. Each is a
                 dictionary with a single item mapping the node's name to its output.
+                If the node couldn't be resolved and has no output, the node name is
+                provided instead of a tuple.
 
         Returns:
             The node name and its output.
         """
-        received_inputs: Dict[Text, Any] = dict(inputs_from_previous_nodes)
+        # filter out arguments that dask couldn't lookup
+        received_inputs: Dict[Text, Any] = {}
+        for i in inputs_from_previous_nodes:
+            if isinstance(i, tuple):
+                node_name, node_output = i
+                received_inputs[node_name] = node_output
+            else:
+                logger.warning(
+                    f"Node '{i}' was not resolved, there is no putput. "
+                    f"Another component should have provided this as an "
+                    f"output."
+                )
 
         kwargs = {}
-        for input_name, input_node in self._inputs.items():
-            kwargs[input_name] = received_inputs[input_node]
+        for input_name, input_provider_node_name in self._inputs.items():
+            if input_provider_node_name not in received_inputs:
+                raise GraphRunError(
+                    f"Missing input to run node '{self._node_name}'. "
+                    f"Expected input '{input_provider_node_name}' to "
+                    f"provide parameter '{input_name}'."
+                )
+            kwargs[input_name] = received_inputs[input_provider_node_name]
 
         input_hook_outputs = self._run_before_hooks(kwargs)
 
@@ -464,9 +499,15 @@ class GraphNode:
             # handling of exceptions.
             raise
         except Exception as e:
-            raise GraphComponentException(
-                f"Error running graph component for node {self._node_name}."
-            ) from e
+            if not isinstance(e, RasaException):
+                raise GraphComponentException(
+                    f"Error running graph component for node {self._node_name}."
+                ) from e
+            else:
+                logger.error(
+                    f"Error running graph component for node {self._node_name}."
+                )
+                raise
 
         self._run_after_hooks(input_hook_outputs, output)
 
@@ -544,6 +585,8 @@ class GraphModelConfiguration:
     train_schema: GraphSchema
     predict_schema: GraphSchema
     training_type: TrainingType
+    assistant_id: Optional[Text]
     language: Optional[Text]
     core_target: Optional[Text]
     nlu_target: Optional[Text]
+    spaces: Optional[Dict[Text, Text]] = None

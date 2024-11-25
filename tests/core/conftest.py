@@ -11,7 +11,6 @@ from scipy import sparse
 
 import pytest
 
-import rasa.utils.io
 from rasa.core.agent import Agent
 from rasa.core.channels.channel import CollectingOutputChannel, OutputChannel
 from rasa.shared.core.domain import Domain
@@ -28,14 +27,16 @@ from tests.core.utilities import tracker_from_dialogue
 
 
 class CustomSlot(Slot):
-    def as_feature(self):
+    type_name = "custom"
+
+    def _as_feature(self):
         return [0.5]
 
 
 class MockedMongoTrackerStore(MongoTrackerStore):
     """In-memory mocked version of `MongoTrackerStore`."""
 
-    def __init__(self, _domain: Domain,) -> None:
+    def __init__(self, _domain: Domain) -> None:
         from mongomock import MongoClient
 
         self.db = MongoClient().rasa
@@ -50,20 +51,24 @@ class MockedMongoTrackerStore(MongoTrackerStore):
 # https://github.com/pytest-dev/pytest-asyncio/issues/68
 # this event_loop is used by pytest-asyncio, and redefining it
 # is currently the only way of changing the scope of this fixture
+# update: implement fix to RuntimeError Event loop is closed issue described
+# here: https://github.com/pytest-dev/pytest-asyncio/issues/371
 @pytest.fixture(scope="session")
 def event_loop(request: Request) -> Generator[asyncio.AbstractEventLoop, None, None]:
     loop = asyncio.get_event_loop_policy().new_event_loop()
+    loop._close = loop.close
+    loop.close = lambda: None
     yield loop
-    loop.close()
+    loop._close()
 
 
+# override loop fixture to prevent ScopeMismatch pytest error and
+# align the result of the loop fixture with that of the event_loop fixture
 @pytest.fixture(scope="session")
-def loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop = rasa.utils.io.enable_async_loop_debugging(loop)
-    yield loop
-    loop.close()
+def loop(
+    event_loop: asyncio.AbstractEventLoop,
+) -> Generator[asyncio.AbstractEventLoop, None, None]:
+    yield event_loop
 
 
 @pytest.fixture
@@ -77,7 +82,7 @@ async def default_processor(default_agent: Agent) -> MessageProcessor:
 
 
 @pytest.fixture
-def tracker_with_six_scheduled_reminders(
+async def tracker_with_six_scheduled_reminders(
     default_processor: MessageProcessor,
 ) -> DialogueStateTracker:
     reminders = [
@@ -106,13 +111,13 @@ def tracker_with_six_scheduled_reminders(
         ),
     ]
     sender_id = uuid.uuid4().hex
-    tracker = default_processor.tracker_store.get_or_create_tracker(sender_id)
+    tracker = await default_processor.tracker_store.get_or_create_tracker(sender_id)
     for reminder in reminders:
         tracker.update(UserUttered("test"))
         tracker.update(ActionExecuted("action_reminder_reminder"))
         tracker.update(reminder)
 
-    default_processor.tracker_store.save(tracker)
+    await default_processor.tracker_store.save(tracker)
 
     return tracker
 
